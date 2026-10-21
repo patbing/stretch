@@ -150,8 +150,8 @@ STRETCH never holds a shared key and never proxies your traffic.
 
 ## Privacy
 
-* The request contains **only** the selected text plus up to 1,000 characters
-  of context from the same paragraph before and after it.
+* The request contains **only** the selected text (1–600 code points) plus up to
+  1,000 code points of context from the same paragraph, before and after it.
 * No URL, no page HTML, no cookies, no telemetry, no error reporting uploads.
 * Generated additions are inserted into the page, so **the site can see them**.
   Shadow DOM is not a confidentiality guarantee.
@@ -169,7 +169,7 @@ STRETCH never holds a shared key and never proxies your traffic.
 ## Development
 
 ```bash
-npm test            # node --test  — 27 unit tests, no dependencies
+npm test            # node --test  — 43 unit tests, no dependencies
 python tools/make_icons.py   # regenerate icons/ (stdlib only)
 ```
 

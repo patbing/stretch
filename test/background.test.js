@@ -113,6 +113,7 @@ test("the request never carries a page URL and always uses the allowlisted model
 });
 
 test("a page cannot choose the model: the worker's stored model wins", async () => {
+  store.local.stretchEligible = { models: ["openai/gpt-5.4-nano", "deepseek/deepseek-v4.1-flash"], checked: true };
   store.local.stretchModel = "deepseek/deepseek-v4.1-flash";
   store.local.stretchKey = { accessToken: "sk_test", connectedAt: Date.now(), expiresAt: null };
   const realFetch = globalThis.fetch;
@@ -129,10 +130,12 @@ test("a page cannot choose the model: the worker's stored model wins", async () 
     globalThis.fetch = realFetch;
     delete store.local.stretchModel;
     delete store.local.stretchKey;
+    delete store.local.stretchEligible;
   }
 });
 
 test("the worker's stored model is what reaches the API", async () => {
+  store.local.stretchEligible = { models: ["openai/gpt-5.4-nano", "deepseek/deepseek-v4.1-flash"], checked: true };
   store.local.stretchModel = "deepseek/deepseek-v4.1-flash";
   store.local.stretchKey = { accessToken: "sk_test", connectedAt: Date.now(), expiresAt: null };
   let seen = null;
@@ -150,6 +153,7 @@ test("the worker's stored model is what reaches the API", async () => {
     globalThis.fetch = realFetch;
     delete store.local.stretchModel;
     delete store.local.stretchKey;
+    delete store.local.stretchEligible;
   }
 });
 

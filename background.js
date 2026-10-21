@@ -65,7 +65,9 @@ async function getModel() {
     if (ALLOWED_MODELS.includes(m) && list.includes(m)) return m;
     return list[0];
   }
-  return ALLOWED_MODELS.includes(m) ? m : DEFAULT_MODEL;
+  // No successful discovery yet: fail closed rather than call blind.
+  if (eligible && eligible.checked) return null;
+  return null;
 }
 
 /** Models the live catalogue confirms as usable with Quest (tier) Pollen. */
@@ -104,7 +106,7 @@ export async function refreshPricing({ fetchImpl = fetch, token } = {}) {
   for (const id of ALLOWED_MODELS) {
     const m = items.find((x) => x && x.id === id);
     if (!m) continue; // not in the catalogue: not offered
-    if (m.paid_only === true) continue; // never surface a paid-only model
+    if (m.paid_only !== false) continue; // only an explicit paid_only:false is usable
     const p = m.pricing || {};
     const inRate = Number(p.promptTextTokens);
     const outRate = Number(p.completionTextTokens);
@@ -115,7 +117,7 @@ export async function refreshPricing({ fetchImpl = fetch, token } = {}) {
   }
   await setPricing(next);
   await chrome.storage.local.set({
-    [ELIGIBILITY_STORAGE]: { models: eligibleModels, checkedAt: Date.now() },
+    [ELIGIBILITY_STORAGE]: { models: eligibleModels, checked: true, checkedAt: Date.now() },
   });
   return { ok: true, pricing: next, eligible: eligibleModels };
 }
@@ -189,8 +191,9 @@ export async function handleStretchRequest(payload, deps = {}) {
     } catch (_) {
       /* ignore */
     }
-    const mapped = mapUpstreamError(res.status, text);
-    // A rejected credential must not stay behind as a false "Connected".
+    const mapped = mapUpstreamError(res.status, text, res.headers || {});
+    // Only an explicit auth rejection clears the stored credential; a balance
+    // problem must keep the connection.
     if (mapped.code === "AUTH_REJECTED") {
       try {
         await chrome.storage.local.remove([KEY_STORAGE]);
@@ -318,9 +321,14 @@ export async function handleDeviceToken({ fetchImpl = fetch, sessionId = "" } = 
       [KEY_STORAGE]: { accessToken: data.access_token, connectedAt: Date.now(), expiresAt: null },
     });
     await chrome.storage.session.remove(SESSION_STORAGE);
-    // Prices are a nicety: never make the sign-in wait for them.
-    refreshPricing({ token: data.access_token }).catch(() => {});
-    return { ok: true };
+    // Confirm the model catalogue before the reader can spend anything, so the
+    // eligibility of the model we will call is known.
+    const priced = await refreshPricing({ token: data.access_token }).catch(() => null);
+    if (!priced || !priced.ok) {
+      // keep the key, but say the model list could not be confirmed
+      return { ok: true, pricingKnown: false };
+    }
+    return { ok: true, pricingKnown: true };
   }
   const err = (data && data.error) || "";
   if (err === "authorization_pending" || err === "slow_down") {
@@ -414,6 +422,14 @@ export async function dispatch(msg, sender) {
   }
   switch (msg.type) {
     case "STRETCH_REQUEST": {
+      // Never touch a credential while the storage guard is not in place.
+      await guardStorage();
+      if (!storageGuarded) {
+        return fail(
+          "PROVIDER_ERROR",
+          "STRETCH could not protect its stored key, so it will not call the model.",
+        );
+      }
       // Register the request BEFORE awaiting anything, so a cancel that arrives
       // during the storage reads still finds it.
       const controller = new AbortController();
@@ -437,7 +453,8 @@ export async function dispatch(msg, sender) {
         return { v: 1, type: "STRETCH_RESULT", requestId: msg.requestId, anchorId: msg.anchorId, ...res };
       } finally {
         clearTimeout(timer);
-        inFlight.delete(key);
+        // only delete our own entry: a newer request with the same id must survive
+        if (inFlight.get(key) === controller) inFlight.delete(key);
       }
     }
     case "STRETCH_CANCEL": {
@@ -496,33 +513,38 @@ export async function dispatch(msg, sender) {
 }
 
 // The Pollinations key must not be readable by content scripts.
-// chrome.storage.local is exposed to content scripts by default, so restrict it
-// BEFORE any message is handled, and keep working if the call is unavailable.
+// chrome.storage.local is exposed to content scripts by default, so restrict it.
+// The listener is registered synchronously (a worker must not miss the message
+// that woke it); dispatch refuses secret operations if the guard failed.
 let storageGuarded = false;
-async function guardStorage() {
-  try {
-    if (chrome.storage && chrome.storage.local && chrome.storage.local.setAccessLevel) {
-      await chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+let storageGuardPromise = null;
+function guardStorage() {
+  if (storageGuardPromise) return storageGuardPromise;
+  storageGuardPromise = (async () => {
+    try {
+      if (chrome.storage && chrome.storage.local && chrome.storage.local.setAccessLevel) {
+        await chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+      }
+      if (chrome.storage && chrome.storage.session && chrome.storage.session.setAccessLevel) {
+        await chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+      }
+      storageGuarded = true;
+    } catch (e) {
+      storageGuarded = false;
     }
-    if (chrome.storage && chrome.storage.session && chrome.storage.session.setAccessLevel) {
-      await chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
-    }
-    storageGuarded = true;
-  } catch (e) {
-    storageGuarded = false;
-  }
+    return storageGuarded;
+  })();
+  return storageGuardPromise;
 }
+guardStorage();
 
 if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
-  const listener = (msg, sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     dispatch(msg, sender)
       .then((r) => sendResponse(r))
       .catch((e) =>
         sendResponse({ ok: false, error: { code: "PROVIDER_ERROR", message: String(e && e.message) } }),
       );
     return true; // async response
-  };
-  guardStorage().then(() => {
-    chrome.runtime.onMessage.addListener(listener);
   });
 }

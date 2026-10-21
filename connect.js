@@ -48,6 +48,15 @@ async function start() {
     verificationUriComplete: res.verificationUriComplete || "",
     verificationUri: res.verificationUri || "",
   };
+  // Only accept an authorization link from the documented origin.
+  if (!safeVerificationUrl(state.verificationUriComplete || state.verificationUri)) {
+    showError("Pollinations returned an unexpected authorization link. Nothing was opened.");
+    $("step2").classList.add("hide");
+    $("step1").classList.remove("hide");
+    $("start").disabled = false;
+    $("start").textContent = "Get a sign-in code";
+    return;
+  }
   $("code").textContent = state.userCode || "· · · ·";
   $("step1").classList.add("hide");
   $("step2").classList.remove("hide");
@@ -118,9 +127,28 @@ async function poll() {
 
 $("start").addEventListener("click", start);
 
+/** The authorization page must be the documented Pollinations origin, over HTTPS. */
+const AUTH_ORIGIN = "https://enter.pollinations.ai";
+
+function safeVerificationUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return null;
+    if (u.origin !== AUTH_ORIGIN) return null;
+    return u.href;
+  } catch (e) {
+    return null;
+  }
+}
+
 $("authorize").addEventListener("click", () => {
-  const url = state.verificationUriComplete || state.verificationUri;
-  if (url) chrome.tabs.create({ url });
+  const raw = state.verificationUriComplete || state.verificationUri;
+  const url = safeVerificationUrl(raw);
+  if (!url) {
+    showError("That authorization link is not a Pollinations link — not opening it.");
+    return;
+  }
+  chrome.tabs.create({ url });
 });
 
 $("copy").addEventListener("click", async () => {

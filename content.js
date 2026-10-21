@@ -40,8 +40,8 @@
   function cacheKey(info) {
     const i = info || {};
     const sel = String(i.selection ?? i.text ?? "").trim();
-    const b = String(i.before ?? "").trim().slice(-200);
-    const a = String(i.after ?? "").trim().slice(0, 200);
+    const b = String(i.before ?? "").trim();
+    const a = String(i.after ?? "").trim();
     return `k${hashString(sel + "\u0000" + b + "\u0000" + a)}`;
   }
   /** A fresh DOM identity for one inserted element. */
@@ -128,7 +128,29 @@
       return null;
     }
     const after = post.toString();
-    return { before: before.slice(-CTX_MAX), after: after.slice(0, CTX_MAX) };
+    // slice by code points, so a surrogate pair is never cut in half
+    const cut = (str, from, to) => Array.from(str).slice(from, to).join("");
+    return { before: cut(before, -CTX_MAX), after: cut(after, 0, CTX_MAX) };
+  }
+
+  /** The selected contents themselves must be safe: no editor, no nested block. */
+  function rangeContentsAreSafe(range) {
+    let frag = null;
+    try {
+      frag = range.cloneContents();
+    } catch (e) {
+      return false;
+    }
+    if (!frag) return false;
+    const editor = frag.querySelector(
+      'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]',
+    );
+    if (editor) return false;
+    const block = frag.querySelector(
+      "p, li, dd, dt, td, th, h1, h2, h3, h4, h5, h6, blockquote, pre, div, section, article, main, table, tr",
+    );
+    if (block) return false;
+    return true;
   }
 
   function selectionInfo() {
@@ -150,6 +172,7 @@
 
     const ctx = contextFor(range);
     if (!ctx) return { error: "multiblock" };
+    if (!rangeContentsAreSafe(range)) return { error: "editable" };
 
     return { range: range.cloneRange(), text, before: ctx.before, after: ctx.after };
   }
@@ -446,9 +469,10 @@
       return;
     }
 
-    // Cached? Re-insert without spending anything.
+    // Cached? Re-insert without spending anything. A hash hit is confirmed by
+    // comparing the exact fields: two different contexts must never share a key.
     const hit = cache.get(key);
-    if (hit) {
+    if (hit && hit.selection === info.text && hit.before === info.before && hit.after === info.after) {
       const { host, shadow } = makeHost(anchorId);
       try {
         insertAt(info.range, host);
@@ -522,6 +546,14 @@
     pending.delete(requestId);
     if (controller.aborted) return;
     if (!host.isConnected) return; // the host was removed while we waited
+    // The page may have rewritten the text while we waited: do not insert an
+    // answer that no longer matches the sentence.
+    if (!stillValid(info)) {
+      removeHost(host, anchorId);
+      showToast("STRETCH: the text changed while I was writing — the answer was discarded.", "error");
+      announce("The page changed; the answer was discarded.");
+      return;
+    }
 
     if (!res || !res.ok) {
       const err = (res && res.error) || { code: "PROVIDER_ERROR", message: "Something went wrong." };
@@ -532,7 +564,14 @@
       announce(`Stretch failed: ${msg}`);
       return;
     }
-    const entry = { text: res.body, model: res.model, cost: res.estimatedPollen };
+    const entry = {
+      text: res.body,
+      model: res.model,
+      cost: res.estimatedPollen,
+      selection: info.text,
+      before: info.before,
+      after: info.after,
+    };
     cache.set(key, entry);
     renderAddition(host, shadow, { text: entry.text, model: entry.model, cost: entry.cost, cached: false });
   }

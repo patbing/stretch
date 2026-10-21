@@ -32,17 +32,29 @@ async function render() {
     return;
   }
   $("model").value = s.model;
-  // only offer models the live catalogue confirms as usable with Quest Pollen
+  // only offer models the live catalogue confirms as usable with Quest Pollen.
+  // null = not confirmed yet (all models are shown), [] = confirmed none usable.
   const sel = $("model");
-  const eligible = s.eligible && s.eligible.length ? s.eligible : s.models;
+  const eligible = s.eligible;
   for (const opt of Array.from(sel.options)) {
-    const ok = eligible.includes(opt.value);
-    opt.disabled = !ok;
-    opt.textContent = ok
-      ? opt.textContent.replace(/ — unavailable.*$/, "")
-      : `${opt.textContent} — unavailable for Quest Pollen`;
+    if (Array.isArray(eligible)) {
+      const ok = eligible.includes(opt.value);
+      opt.disabled = !ok;
+      opt.textContent = ok
+        ? opt.textContent.replace(/ — unavailable.*$/, "")
+        : `${opt.textContent} — not available with Quest Pollen`;
+    } else {
+      opt.disabled = false;
+      opt.textContent = opt.textContent.replace(/ — unavailable.*$/, "");
+    }
   }
-  if (!eligible.includes(s.model) && eligible.length) sel.value = eligible[0];
+  if (Array.isArray(eligible) && eligible.length && !eligible.includes(s.model)) {
+    sel.value = eligible[0];
+  }
+  if (Array.isArray(eligible) && !eligible.length) {
+    $("cost").textContent =
+      "No model is currently available with Quest Pollen. STRETCH will not call a paid-only model.";
+  }
   // built with DOM nodes, never innerHTML
   el.replaceChildren();
   if (s.connected) {

@@ -36,7 +36,9 @@ test("byteLength counts UTF-8 bytes", () => {
 test("validateRequest accepts a normal selection", () => {
   const r = ok();
   assert.equal(r.ok, true);
-  assert.equal(r.request.model, DEFAULT_MODEL);
+  // the model is not part of the request any more: the worker owns it
+  assert.equal(r.request.model, undefined);
+  assert.equal(r.request.selection, "photosynthesis");
 });
 
 test("validateRequest rejects an empty selection", () => {
@@ -51,9 +53,10 @@ test("validateRequest rejects a selection over the limit", () => {
   assert.equal(r.error.code, "UNSUPPORTED_SELECTION");
 });
 
-test("validateRequest rejects a model that is not allowlisted", () => {
+test("validateRequest ignores a model sent by the page (the worker owns it)", () => {
   const r = ok("x", { model: "evil/model" });
-  assert.equal(r.ok, false);
+  assert.equal(r.ok, true);
+  assert.equal(r.request.model, undefined);
 });
 
 test("validateRequest rejects context that is too long", () => {
@@ -107,10 +110,17 @@ test("estimateCost uses the reference prices", () => {
 test("mapUpstreamError separates auth, balance, rate limit and provider errors", () => {
   assert.equal(mapUpstreamError(401, "").code, "AUTH_REJECTED");
   assert.equal(mapUpstreamError(402, "").code, "BALANCE_REQUIRED");
+  assert.equal(mapUpstreamError(403, "invalid api key").code, "AUTH_REJECTED");
   assert.equal(mapUpstreamError(403, "insufficient balance").code, "BALANCE_REQUIRED");
-  assert.equal(mapUpstreamError(403, "forbidden").code, "AUTH_REJECTED");
+  assert.equal(mapUpstreamError(403, "forbidden").code, "PROVIDER_ERROR");
   assert.equal(mapUpstreamError(429, "").code, "RATE_LIMITED");
   assert.equal(mapUpstreamError(500, "").code, "PROVIDER_ERROR");
+});
+
+test("mapUpstreamError carries Retry-After through", () => {
+  const r = mapUpstreamError(429, "", { "retry-after": "12" });
+  assert.equal(r.code, "RATE_LIMITED");
+  assert.equal(r.retryAfter, "12");
 });
 
 test("buildUserMessage produces valid JSON that cannot break out", () => {

@@ -180,15 +180,16 @@ try {
     console.log("service worker attached");
   }
 
-  // store the key and inject the content script
+  // store the key, refresh the model catalogue through the real path, inject
   const setup = await cdp.ev(
     `(async () => {
        await chrome.storage.local.set({ stretchKey: { accessToken: ${JSON.stringify(KEY)}, connectedAt: Date.now(), expiresAt: null } });
+       const priced = await chrome.runtime.sendMessage({ v: 1, type: "REFRESH_PRICING" });
        const self = await chrome.tabs.getCurrent();
        const tabs = (await chrome.tabs.query({})).filter(t => t.id !== (self && self.id));
        const target = tabs[tabs.length - 1];
        await chrome.scripting.executeScript({ target: { tabId: target.id }, files: ["content.js"] });
-       return "ok tab " + target.id;
+       return "ok tab " + target.id + " eligible=" + JSON.stringify(priced && priced.eligible);
      })()`,
     esid,
   );
