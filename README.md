@@ -12,6 +12,12 @@ sentence grows a short inline addition right where you were reading — then
 
 Quest: [pollinations/pollinations#17998](https://github.com/pollinations/pollinations/issues/17998)
 
+![STRETCH stretching a selected phrase inline](docs/screenshot.png)
+
+*The real extension on the demo article: "Carthage" is selected, the addition grows
+inline in the paragraph, and the `×` control shrinks it back. The original wording
+is untouched.*
+
 ---
 
 ## Install (unpacked, no store)

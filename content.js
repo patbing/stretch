@@ -223,12 +223,13 @@
       .add{font:inherit;opacity:.92}
       .add::before{content:" ("}
       .add::after{content:")"}
-      .minus{all:unset;cursor:pointer;margin-left:2px;padding:0 3px;border-radius:4px;
-        font:inherit;font-size:.85em;opacity:.55;border:1px solid currentColor;line-height:1}
+      .minus{all:unset;cursor:pointer;margin-left:3px;padding:0 4px;border-radius:4px;
+        font:inherit;font-size:.9em;opacity:.55;border:1px solid currentColor;line-height:1.1}
       .minus:hover{opacity:1}
       .minus:focus-visible{outline:2px solid currentColor;opacity:1}
       .cached{font-size:.8em;opacity:.5;margin-left:3px}
       .err{font:inherit;font-size:.9em;opacity:.7}
+      .loading{font:inherit;font-size:.9em;opacity:.6}
     `;
   }
 
@@ -251,7 +252,7 @@
   }
 
   function showError(hostEl, shadow, message) {
-    shadow.querySelectorAll(".add,.minus,.cached").forEach((n) => n.remove());
+    shadow.querySelectorAll(".add,.minus,.cached,.loading").forEach((n) => n.remove());
     const err = document.createElement("span");
     err.className = "err";
     err.textContent = ` ${message}`;
@@ -260,15 +261,16 @@
   }
 
   function renderAddition(hostEl, shadow, { text, model, cost, cached }) {
-    shadow.querySelectorAll(".add,.minus,.cached,.err").forEach((n) => n.remove());
+    shadow.querySelectorAll(".add,.minus,.cached,.err,.loading").forEach((n) => n.remove());
     const add = document.createElement("span");
     add.className = "add";
     add.textContent = text; // plain text node, never HTML
     const minus = document.createElement("button");
     minus.className = "minus";
     minus.type = "button";
-    minus.textContent = "−";
+    minus.textContent = "×";
     minus.title = "Shrink this addition";
+    minus.setAttribute("aria-label", "Shrink this addition");
     minus.addEventListener("mousedown", (e) => e.preventDefault());
     minus.addEventListener("click", (e) => {
       e.preventDefault();
@@ -332,7 +334,7 @@
     hosts.set(anchorId, host);
 
     const loading = document.createElement("span");
-    loading.className = "err";
+    loading.className = "loading";
     loading.textContent = " …";
     shadow.appendChild(loading);
     announce("Stretching…");
