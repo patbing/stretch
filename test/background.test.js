@@ -75,7 +75,7 @@ function jsonResponse(body, status = 200) {
 }
 
 const CONTENT_SENDER = { id: "stretchtestextensionid", tab: { id: 7 }, url: "https://example.com/a" };
-const EXT_PAGE_SENDER = { id: "stretchtestextensionid", url: "chrome-extension://abc/popup.html" };
+const EXT_PAGE_SENDER = { id: "stretchtestextensionid", url: "chrome-extension://stretchtestextensionid/popup.html" };
 
 test("a successful request returns the body, usage and a cost estimate", async () => {
   const res = await handleStretchRequest(REQ, {
@@ -162,6 +162,38 @@ test("a generation request from an extension page is refused", async () => {
 test("a generation request without a tab is refused", async () => {
   const res = await dispatch({ ...REQ }, { id: "stretchtestextensionid", url: "https://example.com" });
   assert.equal(res.ok, false);
+});
+
+test("with no Quest-eligible model the worker refuses to generate", async () => {
+  store.local.stretchEligible = { models: [], checkedAt: Date.now() };
+  store.local.stretchKey = { accessToken: "sk_test", connectedAt: Date.now(), expiresAt: null };
+  let called = false;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    called = true;
+    return jsonResponse({ choices: [{ message: { content: "x" } }], usage: {} });
+  };
+  try {
+    const res = await dispatch({ ...REQ }, CONTENT_SENDER);
+    assert.equal(res.ok, false);
+    assert.equal(res.error.code, "NO_ELIGIBLE_MODEL");
+    assert.equal(called, false, "no request may be made without an eligible model");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete store.local.stretchEligible;
+    delete store.local.stretchKey;
+  }
+});
+
+test("a model the catalogue says is unusable cannot be selected", async () => {
+  store.local.stretchEligible = { models: ["openai/gpt-5.4-nano"], checkedAt: Date.now() };
+  const res = await dispatch(
+    { v: 1, type: "SET_MODEL", model: "deepseek/deepseek-v4.1-flash" },
+    EXT_PAGE_SENDER,
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.error.code, "NO_ELIGIBLE_MODEL");
+  delete store.local.stretchEligible;
 });
 
 test("a page may not drive the privileged commands", async () => {

@@ -57,13 +57,15 @@ async function getModel() {
   const got = await chrome.storage.local.get([MODEL_STORAGE, ELIGIBILITY_STORAGE]);
   const m = got && got[MODEL_STORAGE];
   const eligible = (got && got[ELIGIBILITY_STORAGE]) || null;
-  if (!ALLOWED_MODELS.includes(m)) return DEFAULT_MODEL;
-  // A model that the live catalogue no longer offers, or that has become
-  // paid-only, must not be called.
-  if (eligible && Array.isArray(eligible.models) && !eligible.models.includes(m)) {
-    return eligible.models[0] || DEFAULT_MODEL;
+  const list = eligible && Array.isArray(eligible.models) ? eligible.models : null;
+  if (list) {
+    // The live catalogue is the authority: with no Quest-eligible model there is
+    // nothing we may call. Never fall back to a model we were told is unusable.
+    if (!list.length) return null;
+    if (ALLOWED_MODELS.includes(m) && list.includes(m)) return m;
+    return list[0];
   }
-  return m;
+  return ALLOWED_MODELS.includes(m) ? m : DEFAULT_MODEL;
 }
 
 /** Models the live catalogue confirms as usable with Quest (tier) Pollen. */
@@ -134,7 +136,13 @@ export async function handleStretchRequest(payload, deps = {}) {
   const req = checked.request;
 
   // The worker owns the model: a content script may not choose one.
-  const usedModel = model || DEFAULT_MODEL;
+  const usedModel = model || null;
+  if (!usedModel) {
+    return fail(
+      "NO_ELIGIBLE_MODEL",
+      "No Quest-Pollen eligible model is available right now. Try again later.",
+    );
+  }
 
   if (!token) {
     return fail("AUTH_REQUIRED", "Connect your Pollen account in STRETCH.");
@@ -342,7 +350,9 @@ export async function handleStatus() {
   const model = await getModel();
   const pricing = await getPricing();
   const eligible = await getEligible();
-  const cost = estimateCost({ model, promptTokens: 1500, completionTokens: 400, pricing });
+  const cost = model
+    ? estimateCost({ model, promptTokens: 1500, completionTokens: 400, pricing })
+    : null;
   return {
     ok: true,
     connected: !!token,
@@ -363,7 +373,9 @@ const PRIVILEGED_ONLY = new Set(["DEVICE_CODE", "DEVICE_TOKEN", "DISCONNECT", "S
 
 function senderIsContentScript(sender) {
   if (!sender) return false;
-  if (sender.id && chrome.runtime && chrome.runtime.id && sender.id !== chrome.runtime.id) return false;
+  // the sender must be this extension, and must say so
+  if (!chrome.runtime || !chrome.runtime.id) return false;
+  if (sender.id !== chrome.runtime.id) return false;
   if (!sender.tab || !sender.tab.id) return false;
   if (typeof sender.frameId === "number" && sender.frameId !== 0) return false; // top frame only
   const url = sender.url || "";
@@ -374,12 +386,10 @@ function senderIsContentScript(sender) {
 
 function senderIsExtensionPage(sender) {
   if (!sender) return false;
-  if (sender.id && chrome.runtime && chrome.runtime.id && sender.id !== chrome.runtime.id) return false;
+  if (!chrome.runtime || !chrome.runtime.id) return false;
+  if (sender.id !== chrome.runtime.id) return false;
   const url = sender.url || "";
-  if (!url.startsWith("chrome-extension://")) return false;
-  if (chrome.runtime && chrome.runtime.id && !url.startsWith(`chrome-extension://${chrome.runtime.id}/`)) {
-    return false;
-  }
+  if (!url.startsWith(`chrome-extension://${chrome.runtime.id}/`)) return false;
   return true;
 }
 
@@ -397,6 +407,10 @@ export async function dispatch(msg, sender) {
   }
   if (PRIVILEGED_ONLY.has(msg.type) && !senderIsExtensionPage(sender)) {
     return fail("UNSUPPORTED_SELECTION", "This command may only come from the extension.");
+  }
+  // A status read is harmless, but it still comes from this extension only.
+  if (msg.type === "STRETCH_STATUS" && !senderIsContentScript(sender) && !senderIsExtensionPage(sender)) {
+    return fail("UNSUPPORTED_SELECTION", "This request may only come from STRETCH.");
   }
   switch (msg.type) {
     case "STRETCH_REQUEST": {
@@ -448,6 +462,14 @@ export async function dispatch(msg, sender) {
     case "SET_MODEL": {
       if (!ALLOWED_MODELS.includes(msg.model)) {
         return fail("PROVIDER_ERROR", "Unsupported model.");
+      }
+      // never select a model the live catalogue says is not usable with Quest Pollen
+      const eligible = await getEligible();
+      if (eligible && Array.isArray(eligible.models) && !eligible.models.includes(msg.model)) {
+        return fail(
+          "NO_ELIGIBLE_MODEL",
+          "That model is not available with Quest Pollen right now.",
+        );
       }
       await chrome.storage.local.set({ [MODEL_STORAGE]: msg.model });
       const token = await getKey();
