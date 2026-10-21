@@ -45,6 +45,42 @@ The original text is never rewritten or wrapped. STRETCH appends one
 extension-owned inline element at the end of the selection and removes exactly
 that element on shrink.
 
+## How it uses Pollinations
+
+The whole integration is one request to the Pollinations API, made by the
+service worker with the reader's own key:
+
+```js
+// background.js
+const res = await fetch("https://gen.pollinations.ai/v1/chat/completions", {
+  method: "POST",
+  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+  body: JSON.stringify({
+    model: "openai/gpt-5.4-nano",
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },          // lib/prompt.js
+      { role: "user",   content: buildUserMessage({ selection, before, after }) },
+    ],
+    max_tokens: 1200,
+    stream: false,
+  }),
+});
+```
+
+| What | Where |
+|---|---|
+| API call, BYOP key, device flow | [`background.js`](background.js) |
+| System prompt + user-message template | [`lib/prompt.js`](lib/prompt.js) |
+| Model allowlist, tier-eligibility check, output validation, pricing | [`lib/validate.js`](lib/validate.js) |
+| Sign-in (device flow) | [`connect.js`](connect.js) / [`connect.html`](connect.html) |
+| The page-side behaviour | [`content.js`](content.js) |
+| Price sheet + model list | `GET https://gen.pollinations.ai/v1/models` |
+| Sign-in endpoints | `POST https://enter.pollinations.ai/api/device/code` · `POST https://enter.pollinations.ai/api/device/token` |
+| Quality gate (20 fixed selections) | [`quality/quality.mjs`](quality/quality.mjs) — **20/20** |
+
+The screenshot above is a real run: the addition in the paragraph is the
+model's answer, produced by the call above.
+
 ## Models and cost
 
 Only two models are ever called, and both are usable with **Quest (tier)
