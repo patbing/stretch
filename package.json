@@ -1,0 +1,12 @@
+{
+  "name": "stretch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "STRETCH — stretchtext for any web page, paid with your own Pollen.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/",
+    "icons": "python tools/make_icons.py"
+  }
+}

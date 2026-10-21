@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>STRETCH</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        width: 300px;
+        margin: 0;
+        padding: 14px;
+        font: 13px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+        background: #0d1117;
+        color: #e6edf3;
+      }
+      h1 { font-size: 15px; margin: 0 0 2px; letter-spacing: .3px; }
+      .sub { color: #8b949e; font-size: 11px; margin-bottom: 12px; }
+      .row { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+      .row label { flex: 0 0 74px; color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+      select, button { font: inherit; border-radius: 6px; border: 1px solid #30363d; }
+      select { flex: 1; background: #161b22; color: #e6edf3; padding: 5px 6px; }
+      button { cursor: pointer; padding: 6px 10px; background: #21262d; color: #e6edf3; }
+      button.primary { background: #238636; border-color: #2ea043; color: #fff; }
+      button.danger { background: transparent; color: #f85149; }
+      button:disabled { opacity: .5; cursor: default; }
+      .status { border: 1px solid #30363d; border-radius: 8px; padding: 9px 10px; margin: 10px 0; font-size: 12px; }
+      .status.ok { border-color: #2ea04333; }
+      .status.warn { border-color: #d2992233; }
+      .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+      .cost { color: #8b949e; font-size: 11px; margin-top: 8px; }
+      .mono { font-family: ui-monospace, Consolas, monospace; }
+      hr { border: 0; border-top: 1px solid #21262d; margin: 12px 0; }
+      a { color: #58a6ff; }
+    </style>
+  </head>
+  <body>
+    <h1>STRETCH</h1>
+    <div class="sub">stretchtext for any page — select a phrase, it grows inline, then shrinks back.</div>
+
+    <div id="status" class="status">Checking…</div>
+
+    <div class="row">
+      <label for="model">Model</label>
+      <select id="model">
+        <option value="openai/gpt-5.4-nano">Nano — default, fastest, tier eligible</option>
+        <option value="deepseek/deepseek-v4.1-flash">Flash — slower, richer prose, tier eligible</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <button id="enable" class="primary">Enable on this page</button>
+      <button id="remove">Remove all</button>
+    </div>
+
+    <div class="row">
+      <button id="connect">Connect your Pollen</button>
+      <button id="disconnect" class="danger" hidden>Disconnect</button>
+    </div>
+
+    <div class="cost" id="cost"></div>
+
+    <hr />
+    <div class="cost">
+      Paid with your own Pollen. Typical stretch estimate: <span id="typical" class="mono">–</span>.
+      Actual cost depends on tokens and current pricing. Cached re-expansions make no new request.<br /><br />
+      Only the selected text and nearby paragraph context are sent to Pollinations. Generated additions appear
+      in the page and may be observable by that site.<br /><br />
+      <a href="https://pollinations.ai/?ref=badge" target="_blank" rel="noreferrer">pollinations.ai</a>
+    </div>
+
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

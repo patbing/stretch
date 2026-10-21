@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>STRETCH — stretchtext for any web page</title>
+    <meta
+      name="description"
+      content="A browser extension that grows a selected phrase inline with an AI-written addition, then shrinks it back. Paid with your own Pollen."
+    />
+    <style>
+      :root {
+        --bg: #0d1117;
+        --card: #161b22;
+        --line: #30363d;
+        --fg: #e6edf3;
+        --dim: #8b949e;
+        --accent: #8ab4f8;
+        --green: #3fb950;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.65 -apple-system, "Segoe UI", system-ui, sans-serif;
+      }
+      .wrap { max-width: 860px; margin: 0 auto; padding: 0 20px 72px; }
+      header { padding: 56px 0 30px; border-bottom: 1px solid var(--line); }
+      h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: -.4px; }
+      h2 { font-size: 20px; margin: 40px 0 12px; }
+      .tag { color: var(--dim); font-size: 15px; margin: 0 0 18px; }
+      .badge img { height: 22px; vertical-align: middle; }
+      .btn {
+        display: inline-block;
+        background: #238636;
+        border: 1px solid #2ea043;
+        color: #fff;
+        text-decoration: none;
+        padding: 10px 16px;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 15px;
+        margin: 6px 8px 6px 0;
+      }
+      .btn.ghost { background: transparent; border-color: var(--line); color: var(--fg); }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 20px 22px;
+        margin: 14px 0;
+      }
+      .demo {
+        background: #0f141b;
+        border-left: 3px solid var(--accent);
+        padding: 10px 16px;
+        margin: 14px 0;
+        border-radius: 0 8px 8px 0;
+        font-size: 16px;
+      }
+      .demo .add { color: var(--dim); }
+      .demo .minus {
+        color: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        font-size: 12px;
+        padding: 0 4px;
+        cursor: pointer;
+        margin-left: 4px;
+        vertical-align: 2px;
+      }
+      .demo .cached { color: var(--green); font-size: 12px; margin-left: 6px; }
+      ol, ul { padding-left: 22px; }
+      li { margin: 5px 0; }
+      code, kbd {
+        background: #0d1117;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 1px 5px;
+        font-family: ui-monospace, Consolas, monospace;
+        font-size: 13px;
+      }
+      table { border-collapse: collapse; width: 100%; font-size: 14px; }
+      th, td { border-bottom: 1px solid var(--line); padding: 7px 8px; text-align: left; }
+      th { color: var(--dim); font-weight: 600; }
+      a { color: var(--accent); }
+      .foot { color: var(--dim); font-size: 13px; margin-top: 46px; border-top: 1px solid var(--line); padding-top: 18px; }
+      .shot { width: 100%; border: 1px solid var(--line); border-radius: 10px; margin: 10px 0; }
+      .note { color: var(--dim); font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>STRETCH</h1>
+        <p class="tag">
+          Stretchtext for any web page. Select a phrase, and the sentence grows an inline
+          addition where you were reading — then shrinks back.
+        </p>
+        <p class="badge">
+          <a href="https://pollinations.ai/?ref=badge" target="_blank" rel="noreferrer">
+            <img
+              src="https://raw.githubusercontent.com/pollinations/pollinations/main/packages/ui/src/brand/badge-made-with.svg"
+              alt="Made with pollinations.ai"
+            />
+          </a>
+        </p>
+        <p>
+          <a class="btn" href="downloads/stretch-0.1.0.zip" download>Download stretch-0.1.0.zip</a>
+          <a class="btn ghost" href="demo.html">Try it on the demo article</a>
+          <a class="btn ghost" href="privacy.html">Privacy</a>
+        </p>
+      </header>
+
+      <h2>What it looks like</h2>
+      <div class="demo">
+        Plants use <b>photosynthesis</b><span class="add"> (the process by which plants convert light
+        energy into chemical energy stored as sugars)</span><span class="minus">−</span> to produce sugars.
+      </div>
+      <p class="note">
+        The original wording is never rewritten. The addition is one extension-owned inline element
+        that can be removed again with <code>−</code>. Expanding it a second time uses the
+        <span class="cached">cached</span> text and makes no new request.
+      </p>
+
+      <h2>Install</h2>
+      <ol>
+        <li>Download <code>stretch-0.1.0.zip</code> and extract it.</li>
+        <li>Open <code>chrome://extensions</code> and enable <b>Developer mode</b>.</li>
+        <li>Click <b>Load unpacked</b> and pick the folder containing <code>manifest.json</code>.</li>
+        <li>Pin <b>STRETCH</b>, then open the popup and choose <b>Connect your Pollen</b>.</li>
+        <li>On any page, open the popup and choose <b>Enable on this page</b>, then select a phrase.</li>
+      </ol>
+      <p class="note">
+        There is no build step and nothing to install: the ZIP contains the extension source as-is.
+        Try it on the <a href="demo.html">demo article</a> first.
+      </p>
+
+      <h2>Your Pollen pays for it</h2>
+      <p>
+        STRETCH never holds a shared key. You authorize your own Pollinations account through the
+        device flow, and every stretch is billed to your own wallet. Only two models are offered, and
+        both work with Quest (tier) Pollen.
+      </p>
+      <table>
+        <tr><th>Model</th><th>Input / 1M tokens</th><th>Output / 1M tokens</th><th>Measured</th></tr>
+        <tr><td><code>openai/gpt-5.4-nano</code> (default)</td><td>0.15 Pollen</td><td>0.9375 Pollen</td><td>2–13 s</td></tr>
+        <tr><td><code>deepseek/deepseek-v4.1-flash</code></td><td>0.15 Pollen</td><td>0.60 Pollen</td><td>9–22 s, richer prose</td></tr>
+      </table>
+      <p class="note">
+        A typical stretch costs about <b>0.0005 Pollen</b>. The popup shows the estimate before you
+        click and the exact figure from the reported usage afterwards.
+      </p>
+
+      <h2>What is sent</h2>
+      <p>
+        The selected phrase and up to 1,000 characters of context from the same paragraph — nothing
+        else. No URL, no page HTML, no telemetry. The full details are in
+        <a href="privacy.html">Privacy</a>.
+      </p>
+
+      <h2>Honest limits</h2>
+      <ul>
+        <li>Top-level document only: iframes and shadow DOM are not supported.</li>
+        <li>Selections must stay inside one paragraph; editors and text fields are never modified.</li>
+        <li>No Firefox build, no store listing, no sync, no account system.</li>
+        <li>Browser-internal pages block extensions by design.</li>
+      </ul>
+
+      <div class="foot">
+        Source and issue tracker:
+        <a href="https://github.com/patbing/stretch" target="_blank" rel="noreferrer">github.com/patbing/stretch</a>
+        · Built with
+        <a href="https://pollinations.ai/?ref=badge" target="_blank" rel="noreferrer">pollinations.ai</a>
+      </div>
+    </div>
+  </body>
+</html>

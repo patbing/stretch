@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Connect your Pollen — STRETCH</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #0d1117;
+        color: #e6edf3;
+        font: 14px/1.6 -apple-system, "Segoe UI", system-ui, sans-serif;
+      }
+      .card {
+        width: 420px;
+        padding: 26px 26px 22px;
+        border: 1px solid #30363d;
+        border-radius: 12px;
+        background: #161b22;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      .sub { color: #8b949e; font-size: 12px; margin-bottom: 18px; }
+      .code {
+        font: 600 26px/1 ui-monospace, Consolas, monospace;
+        letter-spacing: 3px;
+        background: #0d1117;
+        border: 1px dashed #30363d;
+        border-radius: 8px;
+        padding: 14px;
+        text-align: center;
+        margin: 10px 0 16px;
+      }
+      button {
+        font: inherit;
+        cursor: pointer;
+        border-radius: 8px;
+        border: 1px solid #30363d;
+        padding: 9px 14px;
+        background: #21262d;
+        color: #e6edf3;
+      }
+      button.primary { background: #238636; border-color: #2ea043; color: #fff; width: 100%; }
+      button.ghost { background: transparent; width: 100%; margin-top: 8px; }
+      .row { display: flex; gap: 8px; align-items: center; }
+      .mono { font-family: ui-monospace, Consolas, monospace; }
+      .muted { color: #8b949e; font-size: 12px; }
+      .ok { color: #3fb950; }
+      .err { color: #f85149; }
+      .hide { display: none; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Connect your Pollen</h1>
+      <div class="sub">STRETCH never stores a shared key. You authorize your own Pollen account; you pay for your own stretches.</div>
+
+      <div id="step1">
+        <div class="muted">Step 1 — request a sign-in code</div>
+        <button id="start" class="primary">Get a sign-in code</button>
+      </div>
+
+      <div id="step2" class="hide">
+        <div class="muted">Step 2 — authorize at Pollinations</div>
+        <div class="code" id="code">····</div>
+        <button id="authorize" class="primary">Authorize at Pollinations</button>
+        <div class="row" style="margin-top:10px">
+          <button id="copy" class="ghost" style="margin:0;width:auto">Copy code</button>
+          <span class="muted" id="countdown"></span>
+        </div>
+        <div class="muted" style="margin-top:14px">
+          Keep this STRETCH tab open until connected. You can close this window after you authorize.
+        </div>
+      </div>
+
+      <div id="step3" class="hide">
+        <div class="ok" id="done"></div>
+        <div class="muted" style="margin-top:8px">
+          Connected. Authorized keys normally expire after 7 days and can be revoked sooner.
+        </div>
+        <button id="close" class="ghost">Close this tab</button>
+      </div>
+
+      <div id="err" class="err hide" style="margin-top:12px"></div>
+    </div>
+    <script src="connect.js" type="module"></script>
+  </body>
+</html>

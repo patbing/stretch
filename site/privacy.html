@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy — STRETCH</title>
+    <style>
+      body {
+        margin: 0;
+        background: #0d1117;
+        color: #e6edf3;
+        font: 16px/1.7 -apple-system, "Segoe UI", system-ui, sans-serif;
+      }
+      .wrap { max-width: 760px; margin: 0 auto; padding: 56px 20px 80px; }
+      h1 { font-size: 30px; margin: 0 0 24px; }
+      h2 { font-size: 19px; margin: 34px 0 10px; }
+      p, li { color: #c9d1d9; }
+      code {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 5px;
+        padding: 1px 5px;
+        font-family: ui-monospace, Consolas, monospace;
+        font-size: 14px;
+      }
+      table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 12px 0; }
+      th, td { border-bottom: 1px solid #21262d; padding: 7px 8px; text-align: left; }
+      th { color: #8b949e; }
+      a { color: #58a6ff; }
+      .foot { color: #8b949e; font-size: 14px; margin-top: 40px; border-top: 1px solid #21262d; padding-top: 16px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Privacy — STRETCH</h1>
+      <p>
+        STRETCH is a personal reading aid. The minimum possible information leaves your browser: the
+        phrase you selected, and a little context around it.
+      </p>
+
+      <h2>What is sent to Pollinations</h2>
+      <p>One request per stretch you ask for, whose body is exactly:</p>
+      <table>
+        <tr><th>Field</th><th>What it holds</th></tr>
+        <tr><td><code>selection</code></td><td>the phrase you selected (1–600 characters)</td></tr>
+        <tr><td><code>before</code></td><td>up to 1000 characters before it, same paragraph</td></tr>
+        <tr><td><code>after</code></td><td>up to 1000 characters after it, same paragraph</td></tr>
+      </table>
+      <p>
+        <b>Never sent:</b> the page URL, page HTML, cookies, other tabs, browsing history, your
+        account email, or any identifier. There is no telemetry and no error reporting.
+      </p>
+
+      <h2>Where your key lives</h2>
+      <p>
+        Your Pollinations <code>sk_…</code> key is stored in <code>chrome.storage.local</code> — your
+        browser profile's local extension storage. It is protected from ordinary page JavaScript, but
+        it is <b>not encrypted at rest</b>. Only the service worker can read it; the content script
+        never receives it, and it never appears in the page, a URL, or a log.
+      </p>
+      <p>
+        Authorized keys normally expire after 7 days and can be revoked sooner. <b>Disconnect</b> in the
+        popup clears the local key; revoking it at Pollinations invalidates it everywhere.
+      </p>
+
+      <h2>What the site can see</h2>
+      <p>
+        A generated addition is inserted into the page, so <b>that site can read it and can remove
+        it</b>. Shadow DOM is not a confidentiality boundary. Nothing else you read is shared.
+      </p>
+
+      <h2>The only network requests STRETCH makes</h2>
+      <ul>
+        <li><code>POST https://enter.pollinations.ai/api/device/code</code> and <code>…/device/token</code> — sign-in only.</li>
+        <li><code>GET https://gen.pollinations.ai/v1/models</code> — prices and tier eligibility.</li>
+        <li><code>POST https://gen.pollinations.ai/v1/chat/completions</code> — one per stretch you asked for.</li>
+      </ul>
+
+      <p class="foot">
+        <a href="index.html">← install page</a> ·
+        <a href="https://github.com/patbing/stretch" target="_blank" rel="noreferrer">source</a> ·
+        <a href="https://pollinations.ai/?ref=badge" target="_blank" rel="noreferrer">pollinations.ai</a>
+      </p>
+    </div>
+  </body>
+</html>
