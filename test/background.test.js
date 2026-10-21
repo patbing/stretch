@@ -20,6 +20,7 @@ function installChromeMock() {
         async remove(keys) {
           for (const k of Array.isArray(keys) ? keys : [keys]) delete local[k];
         },
+        setAccessLevel() {},
       },
       session: {
         async get(keys) {
@@ -34,17 +35,20 @@ function installChromeMock() {
         async remove(keys) {
           for (const k of Array.isArray(keys) ? keys : [keys]) delete session[k];
         },
+        setAccessLevel() {},
       },
     },
+    runtime: { id: "stretchtestextensionid" },
   };
   return { local, session };
 }
 
-installChromeMock();
-const { handleStretchRequest, refreshPricing, handleDeviceCode, handleDeviceToken, handleStatus } =
+const store = installChromeMock();
+const { handleStretchRequest, refreshPricing, handleDeviceCode, handleDeviceToken, handleStatus, dispatch } =
   await import("../background.js");
 
 const REQ = {
+  type: "STRETCH_REQUEST",
   selection: "photosynthesis",
   before: "Plants use ",
   after: " to produce sugars.",
@@ -69,10 +73,13 @@ function jsonResponse(body, status = 200) {
   };
 }
 
+const CONTENT_SENDER = { id: "stretchtestextensionid", tab: { id: 7 }, url: "https://example.com/a" };
+const EXT_PAGE_SENDER = { id: "stretchtestextensionid", url: "chrome-extension://abc/popup.html" };
+
 test("a successful request returns the body, usage and a cost estimate", async () => {
   const res = await handleStretchRequest(REQ, {
     token: "sk_test",
-    model: "deepseek/deepseek-v4.1-flash",
+    model: "openai/gpt-5.4-nano",
     fetchImpl: fakeFetch(async () =>
       jsonResponse({
         choices: [{ message: { content: "the process of converting light into sugars" }, finish_reason: "stop" }],
@@ -84,6 +91,7 @@ test("a successful request returns the body, usage and a cost estimate", async (
   assert.equal(res.body, "the process of converting light into sugars");
   assert.equal(res.usage.completionTokens, 25);
   assert.ok(res.estimatedPollen > 0);
+  assert.equal(res.model, "openai/gpt-5.4-nano");
 });
 
 test("the request never carries a page URL and always uses the allowlisted model", async () => {
@@ -101,6 +109,58 @@ test("the request never carries a page URL and always uses the allowlisted model
   assert.equal(seen.body.stream, false);
   assert.ok(seen.body.max_tokens >= 1000, "reasoning models need headroom above the old 400 cap");
   assert.ok(!JSON.stringify(seen.body).includes("http"), "no page URL may leak into the request");
+});
+
+test("a page cannot choose the model: the worker's stored model wins", async () => {
+  store.local.stretchModel = "deepseek/deepseek-v4.1-flash";
+  store.local.stretchKey = { accessToken: "sk_test", connectedAt: Date.now(), expiresAt: null };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    jsonResponse({ choices: [{ message: { content: "x" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+  try {
+    const res = await dispatch(
+      { ...REQ, model: "openai/gpt-5.4-nano" }, // a page tries to force the cheap model
+      CONTENT_SENDER,
+    );
+    assert.equal(res.ok, true);
+    assert.equal(res.model, "deepseek/deepseek-v4.1-flash");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete store.local.stretchModel;
+    delete store.local.stretchKey;
+  }
+});
+
+test("the worker's stored model is what reaches the API", async () => {
+  store.local.stretchModel = "deepseek/deepseek-v4.1-flash";
+  store.local.stretchKey = { accessToken: "sk_test", connectedAt: Date.now(), expiresAt: null };
+  let seen = null;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    seen = JSON.parse(opts.body);
+    return jsonResponse({ choices: [{ message: { content: "x" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+  };
+  try {
+    const res = await dispatch({ ...REQ }, CONTENT_SENDER);
+    assert.equal(res.ok, true);
+    assert.equal(seen.model, "deepseek/deepseek-v4.1-flash");
+    assert.equal(res.model, "deepseek/deepseek-v4.1-flash");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete store.local.stretchModel;
+    delete store.local.stretchKey;
+  }
+});
+
+test("a generation request from an extension page is refused", async () => {
+  const res = await dispatch({ ...REQ }, EXT_PAGE_SENDER);
+  assert.equal(res.ok, false);
+  assert.equal(res.error.code, "UNSUPPORTED_SELECTION");
+});
+
+test("a generation request without a tab is refused", async () => {
+  const res = await dispatch({ ...REQ }, { id: "stretchtestextensionid", url: "https://example.com" });
+  assert.equal(res.ok, false);
 });
 
 test("a missing key is reported as AUTH_REQUIRED before any call", async () => {
@@ -159,16 +219,16 @@ test("refreshPricing keeps only allowlisted tier models", async () => {
     fetchImpl: fakeFetch(async () =>
       jsonResponse({
         data: [
-          { id: "deepseek/deepseek-v4.1-flash", paid_only: false, pricing: { promptTextTokens: "0.00000015", completionTextTokens: "0.0000006" } },
-          { id: "openai/gpt-5.4-nano", paid_only: true, pricing: { promptTextTokens: "0.1", completionTextTokens: "9" } },
+          { id: "openai/gpt-5.4-nano", paid_only: false, pricing: { promptTextTokens: "0.00000015", completionTextTokens: "0.0000009375" } },
+          { id: "deepseek/deepseek-v4.1-flash", paid_only: true, pricing: { promptTextTokens: "0.1", completionTextTokens: "9" } },
           { id: "some/paid-model", paid_only: true, pricing: { promptTextTokens: "1", completionTextTokens: "9" } },
         ],
       }),
     ),
   });
   assert.equal(res.ok, true);
-  assert.equal(res.pricing["openai/gpt-5.4-nano"].completionTextTokens, 0.0000009375, "paid-only price must not be adopted");
-  assert.equal(res.pricing["deepseek/deepseek-v4.1-flash"].completionTextTokens, 0.0000006);
+  assert.equal(res.pricing["openai/gpt-5.4-nano"].completionTextTokens, 0.0000009375);
+  assert.equal(res.pricing["deepseek/deepseek-v4.1-flash"].completionTextTokens, 0.0000006, "a paid-only price must not be adopted");
   assert.equal(res.pricing["some/paid-model"], undefined);
 });
 

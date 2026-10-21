@@ -72,7 +72,10 @@ export async function refreshPricing({ fetchImpl = fetch, token } = {}) {
   if (!token) return { ok: false, error: { code: "AUTH_REQUIRED", message: "Not connected." } };
   let data;
   try {
-    const res = await fetchImpl(MODELS_URL, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetchImpl(MODELS_URL, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10000),
+    });
     if (!res.ok) return { ok: false, error: { code: "PROVIDER_ERROR", message: "Model list unavailable." } };
     data = await res.json();
   } catch (e) {
@@ -110,12 +113,15 @@ export async function handleStretchRequest(payload, deps = {}) {
   if (!checked.ok) return checked;
   const req = checked.request;
 
+  // The worker owns the model: a content script may not choose one.
+  const usedModel = model || DEFAULT_MODEL;
+
   if (!token) {
     return fail("AUTH_REQUIRED", "Connect your Pollen account in STRETCH.");
   }
 
   const body = {
-    model: req.model || model,
+    model: usedModel,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: buildUserMessage(req) },
@@ -165,7 +171,7 @@ export async function handleStretchRequest(payload, deps = {}) {
   if (!validated.ok) return validated;
 
   const cost = estimateCost({
-    model: req.model,
+    model: usedModel,
     promptTokens: usage.prompt_tokens,
     completionTokens: usage.completion_tokens,
     pricing,
@@ -174,7 +180,7 @@ export async function handleStretchRequest(payload, deps = {}) {
   return {
     ok: true,
     body: validated.text,
-    model: req.model,
+    model: usedModel,
     usage: {
       promptTokens: usage.prompt_tokens || 0,
       completionTokens: usage.completion_tokens || 0,
@@ -196,6 +202,7 @@ export async function handleDeviceCode({ fetchImpl = fetch } = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
+      signal: AbortSignal.timeout(10000),
     });
   } catch (e) {
     return fail("OFFLINE", "Offline. Check your connection and try again.");
@@ -245,6 +252,7 @@ export async function handleDeviceToken({ fetchImpl = fetch } = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ device_code: session.deviceCode }),
+      signal: AbortSignal.timeout(10000),
     });
   } catch (e) {
     return fail("OFFLINE", "Offline. Check your connection and try again.");
@@ -260,7 +268,8 @@ export async function handleDeviceToken({ fetchImpl = fetch } = {}) {
       [KEY_STORAGE]: { accessToken: data.access_token, connectedAt: Date.now(), expiresAt: null },
     });
     await chrome.storage.session.remove(SESSION_STORAGE);
-    await refreshPricing({ token: data.access_token });
+    // Prices are a nicety: never make the sign-in wait for them.
+    refreshPricing({ token: data.access_token }).catch(() => {});
     return { ok: true };
   }
   const err = (data && data.error) || "";
@@ -293,8 +302,28 @@ export async function handleStatus() {
 
 /* --------------------------------------------------------------- messaging */
 
-async function dispatch(msg, sender) {
-  switch (msg && msg.type) {
+/** Which message types may only come from a content script in a web page. */
+const CONTENT_ONLY = new Set(["STRETCH_REQUEST", "STRETCH_CANCEL"]);
+
+function senderIsContentScript(sender) {
+  if (!sender) return false;
+  if (!sender.tab || !sender.tab.id) return false;
+  const url = sender.url || "";
+  // an extension page is not a content script
+  if (url.startsWith("chrome-extension://")) return false;
+  return true;
+}
+
+export async function dispatch(msg, sender) {
+  if (!msg || typeof msg.type !== "string") {
+    return fail("PROVIDER_ERROR", "Unknown message.");
+  }
+  // Sender boundary: a page may not ask for a generation on behalf of another
+  // tab, and an extension page may not inject into pages it was not opened for.
+  if (CONTENT_ONLY.has(msg.type) && !senderIsContentScript(sender)) {
+    return fail("UNSUPPORTED_SELECTION", "This request may only come from a page.");
+  }
+  switch (msg.type) {
     case "STRETCH_REQUEST": {
       const token = await getKey();
       const model = await getModel();
@@ -304,12 +333,11 @@ async function dispatch(msg, sender) {
       const timer = setTimeout(() => controller.abort(), LIMITS.requestTimeoutMs);
       inFlight.set(key, controller);
       try {
-        const res = await handleStretchRequest(msg, {
-          token,
-          model,
-          pricing,
-          signal: controller.signal,
-        });
+        // the worker owns the model: ignore any model the page may have sent
+        const res = await handleStretchRequest(
+          { ...msg, model: undefined, requestId: msg.requestId, anchorId: msg.anchorId },
+          { token, model, pricing, signal: controller.signal },
+        );
         return { v: 1, type: "STRETCH_RESULT", requestId: msg.requestId, anchorId: msg.anchorId, ...res };
       } finally {
         clearTimeout(timer);
@@ -339,7 +367,7 @@ async function dispatch(msg, sender) {
       }
       await chrome.storage.local.set({ [MODEL_STORAGE]: msg.model });
       const token = await getKey();
-      if (token) await refreshPricing({ token });
+      if (token) refreshPricing({ token }).catch(() => {});
       return { ok: true, model: msg.model };
     }
     case "REFRESH_PRICING": {
@@ -370,4 +398,19 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
       );
     return true; // async response
   });
+}
+
+// The Pollinations key must not be readable by content scripts.
+// chrome.storage.local is exposed to content scripts by default, so restrict it.
+if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+  try {
+    chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+  } catch (e) {
+    /* older Chrome: ignore */
+  }
+  try {
+    chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+  } catch (e) {
+    /* ignore */
+  }
 }

@@ -32,14 +32,27 @@ async function render() {
     return;
   }
   $("model").value = s.model;
+  // built with DOM nodes, never innerHTML
+  el.replaceChildren();
   if (s.connected) {
     el.className = "status ok";
-    el.innerHTML = `<span class="dot" style="background:#22c55e"></span>Connected. Authorized keys normally expire after 7 days and can be revoked sooner.`;
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = "#22c55e";
+    el.append(
+      dot,
+      document.createTextNode(
+        "Connected. Authorized keys normally expire after 7 days and can be revoked sooner.",
+      ),
+    );
     $("connect").hidden = true;
     $("disconnect").hidden = false;
   } else {
     el.className = "status warn";
-    el.innerHTML = `<span class="dot" style="background:#d29922"></span>Not connected. Connect your Pollen to stretch.`;
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = "#d29922";
+    el.append(dot, document.createTextNode("Not connected. Connect your Pollen to stretch."));
     $("connect").hidden = false;
     $("disconnect").hidden = true;
   }

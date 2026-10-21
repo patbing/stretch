@@ -21,15 +21,32 @@
   const SEL_MAX = 600;
   const CTX_MAX = 1000;
 
-  /** anchorId -> { text, model, cost } for results that were already paid for. */
+  /** FNV-1a hash — inlined copy of lib/anchor.js (content scripts cannot import modules). */
+  function hashString(s) {
+    let h = 0x811c9dc5;
+    const str = String(s || "");
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(36);
+  }
+  /** Stable key for one stretch — inlined copy of lib/anchor.js. */
+  function cacheKey(info) {
+    const sel = String(info.selection || "").trim();
+    const b = String(info.before || "").trim().slice(-200);
+    const a = String(info.after || "").trim().slice(0, 200);
+    return `k${hashString(sel + " " + b + " " + a)}`;
+  }
+
+  /** key -> { text, model, cost } for results that were already paid for. */
   const cache = new Map();
-  /** anchorId -> host element currently in the page. */
+  /** key -> host element currently in the page. */
   const hosts = new Map();
-  /** requestId -> { anchorId, controller } */
+  /** requestId -> { key, host, shadow } */
   const pending = new Map();
 
-  let savedRange = null;
-  let savedMeta = null;
+  let savedInfo = null;
   let floatBtn = null;
   let liveRegion = null;
   let selTimer = null;
@@ -38,17 +55,34 @@
 
   const cpLen = (s) => Array.from(String(s || "")).length;
 
+  /** The block element that owns a node (never an inline element). */
   function blockOf(node) {
-    const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-    if (!el) return null;
-    const BLOCK =
-      "p, li, dd, dt, blockquote, td, th, figcaption, h1, h2, h3, h4, h5, h6, pre, article, section, div, main, span";
-    return el.closest(BLOCK) || el;
+    let el = node && node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    while (el && el.nodeType === Node.ELEMENT_NODE) {
+      const display = window.getComputedStyle(el).display;
+      if (display !== "inline" && display !== "inline-block" && display !== "contents") {
+        // a block container that is not the whole document body
+        if (el !== document.body && el !== document.documentElement) return el;
+      }
+      el = el.parentElement;
+    }
+    return document.body;
   }
 
+  /** Never modify an editor, a form field, or a design-mode surface. */
   function isEditableContext(el) {
     if (!el) return false;
-    if (el.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']")) return true;
+    if (el.closest && el.closest("input, textarea, select, option")) return true;
+    try {
+      if (el.isContentEditable) return true;
+    } catch (e) {
+      /* ignore */
+    }
+    try {
+      if (document.designMode === "on") return true;
+    } catch (e) {
+      /* ignore */
+    }
     return false;
   }
 
@@ -61,10 +95,6 @@
     }
   }
 
-  function textOfRange(r) {
-    return r ? r.toString() : "";
-  }
-
   /** Context around the selection, taken from the enclosing block. */
   function contextFor(range) {
     const startBlock = blockOf(range.startContainer);
@@ -72,7 +102,6 @@
     if (!startBlock || !endBlock) return null;
     if (startBlock !== endBlock) return null; // spans more than one block
 
-    const blockText = startBlock.textContent || "";
     const pre = document.createRange();
     pre.selectNodeContents(startBlock);
     try {
@@ -89,25 +118,25 @@
       return null;
     }
     const after = post.toString();
-    return {
-      before: before.slice(-CTX_MAX),
-      after: after.slice(0, CTX_MAX),
-    };
+    return { before: before.slice(-CTX_MAX), after: after.slice(0, CTX_MAX) };
   }
 
   function selectionInfo() {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
     const range = sel.getRangeAt(0);
-    const text = textOfRange(range);
+    const text = range.toString();
     if (!text || !text.trim()) return null;
     if (cpLen(text) > SEL_MAX) return { error: "unsupported" };
 
-    const el = range.startContainer.nodeType === Node.TEXT_NODE
+    const startEl = range.startContainer.nodeType === Node.TEXT_NODE
       ? range.startContainer.parentElement
       : range.startContainer;
-    if (isEditableContext(el)) return { error: "editable" };
-    if (inShadowRoot(el)) return { error: "shadow" };
+    const endEl = range.endContainer.nodeType === Node.TEXT_NODE
+      ? range.endContainer.parentElement
+      : range.endContainer;
+    if (isEditableContext(startEl) || isEditableContext(endEl)) return { error: "editable" };
+    if (inShadowRoot(startEl) || inShadowRoot(endEl)) return { error: "shadow" };
 
     const ctx = contextFor(range);
     if (!ctx) return { error: "multiblock" };
@@ -145,7 +174,7 @@
     }
   }
 
-  function showFloatBtn(rect, label, onClick) {
+  function showFloatBtn(rect, onClick) {
     removeFloatBtn();
     const host = document.createElement("div");
     host.style.cssText = "position:fixed;z-index:2147483647;top:0;left:0;";
@@ -162,13 +191,11 @@
     `;
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = label;
-    if (onClick.costLabel) {
-      const c = document.createElement("span");
-      c.className = "cost";
-      c.textContent = onClick.costLabel;
-      btn.appendChild(c);
-    }
+    btn.textContent = "Stretch";
+    const c = document.createElement("span");
+    c.className = "cost";
+    c.textContent = onClick.costLabel || "";
+    btn.appendChild(c);
     btn.addEventListener("mousedown", (e) => e.preventDefault()); // keep the page selection
     btn.addEventListener("click", (e) => {
       e.preventDefault();
@@ -177,10 +204,11 @@
     });
     shadow.append(style, btn);
     document.documentElement.appendChild(host);
-    const top = Math.max(4, rect.top - 34);
+    // position:fixed is viewport-relative: no scroll offset here.
+    const top = Math.max(4, Math.min(window.innerHeight - 44, rect.top - 34));
     const left = Math.min(window.innerWidth - 120, Math.max(4, rect.left));
-    host.style.top = `${top + window.scrollY}px`;
-    host.style.left = `${left + window.scrollX}px`;
+    host.style.top = `${top}px`;
+    host.style.left = `${left}px`;
     floatBtn = host;
     return btn;
   }
@@ -193,25 +221,31 @@
       if (pending.size > 0) return; // do not steal the UI while a request runs
       const info = selectionInfo();
       if (!info || info.error) {
-        savedRange = null;
-        savedMeta = null;
+        savedInfo = null;
         removeFloatBtn();
         return;
       }
-      savedRange = info.range.cloneRange();
-      savedMeta = info;
+      savedInfo = info;
       const rect = info.range.getBoundingClientRect();
-      showFloatBtn(rect, "Stretch", {
+      showFloatBtn(rect, {
+        costLabel: "",
         click: () => startStretch(),
       });
     }, 120);
   }
 
   function onMouseDown(e) {
-    // A click outside the floating button invalidates the anchor.
     if (floatBtn && e.target) {
-      const inBtn = floatBtn.contains(e.target) || (e.composedPath && e.composedPath().includes(floatBtn));
+      const path = e.composedPath ? e.composedPath() : [e.target];
+      const inBtn = path.includes(floatBtn) || (floatBtn.contains && floatBtn.contains(e.target));
       if (!inBtn) removeFloatBtn();
+    }
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "Escape") {
+      removeFloatBtn();
+      savedInfo = null;
     }
   }
 
@@ -228,14 +262,15 @@
       .minus:hover{opacity:1}
       .minus:focus-visible{outline:2px solid currentColor;opacity:1}
       .cached{font-size:.8em;opacity:.5;margin-left:3px}
+      .cost{font-size:.8em;opacity:.45;margin-left:4px}
       .err{font:inherit;font-size:.9em;opacity:.7}
       .loading{font:inherit;font-size:.9em;opacity:.6}
     `;
   }
 
-  function makeHost(anchorId) {
+  function makeHost(key) {
     const host = document.createElement("span");
-    host.setAttribute(HOST_ATTR, anchorId);
+    host.setAttribute(HOST_ATTR, key);
     host.style.cssText = "display:inline;font:inherit;color:inherit;line-height:inherit;";
     const shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
@@ -251,17 +286,21 @@
     return r;
   }
 
-  function showError(hostEl, shadow, message) {
-    shadow.querySelectorAll(".add,.minus,.cached,.loading").forEach((n) => n.remove());
-    const err = document.createElement("span");
-    err.className = "err";
-    err.textContent = ` ${message}`;
-    shadow.appendChild(err);
-    announce(message);
+  function removeHost(hostEl, key) {
+    if (hostEl && hostEl.isConnected) hostEl.remove();
+    hosts.delete(key);
+  }
+
+  function removeAll() {
+    for (const [key, el] of Array.from(hosts.entries())) {
+      removeHost(el, key);
+    }
+    hosts.clear();
+    announce("All STRETCH additions removed.");
   }
 
   function renderAddition(hostEl, shadow, { text, model, cost, cached }) {
-    shadow.querySelectorAll(".add,.minus,.cached,.err,.loading").forEach((n) => n.remove());
+    shadow.querySelectorAll(".add,.minus,.cached,.cost,.err,.loading").forEach((n) => n.remove());
     const add = document.createElement("span");
     add.className = "add";
     add.textContent = text; // plain text node, never HTML
@@ -275,7 +314,9 @@
     minus.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      removeHost(hostEl, anchorIdOf(hostEl));
+      const key = hostEl.getAttribute(HOST_ATTR) || "";
+      removeHost(hostEl, key);
+      announce("Addition removed.");
     });
     shadow.append(add, minus);
     if (cached) {
@@ -285,61 +326,81 @@
       shadow.appendChild(c);
       setTimeout(() => c.remove(), 4000);
     }
-    announce(cached ? "Cached addition restored." : "Addition inserted.");
-  }
-
-  function anchorIdOf(el) {
-    return el.getAttribute(HOST_ATTR) || "";
-  }
-
-  function removeHost(hostEl, anchorId) {
-    if (hostEl && hostEl.isConnected) hostEl.remove();
-    hosts.delete(anchorId);
-  }
-
-  function removeAll() {
-    for (const [id, el] of Array.from(hosts.entries())) {
-      removeHost(el, id);
+    if (cost !== null && cost !== undefined) {
+      const c = document.createElement("span");
+      c.className = "cost";
+      c.textContent = `~${cost.toFixed(6)} Pollen`;
+      shadow.appendChild(c);
     }
-    document.querySelectorAll(`[${HOST_ATTR}]`).forEach((el) => el.remove());
-    hosts.clear();
-    announce("All STRETCH additions removed.");
+    announce(cached ? "Cached addition restored." : "Addition inserted.");
   }
 
   /* ------------------------------------------------------------ the request */
 
   async function startStretch() {
-    if (!savedRange || !savedMeta) return;
-    const info = savedMeta;
+    if (!savedInfo) return;
+    const info = savedInfo;
     removeFloatBtn();
 
-    // Do not stretch our own generated text.
+    // Never stretch our own generated text.
     const el = info.range.startContainer.nodeType === Node.TEXT_NODE
       ? info.range.startContainer.parentElement
       : info.range.startContainer;
     if (el && el.closest && el.closest(`[${HOST_ATTR}]`)) return;
 
-    const anchorId = `a${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
-    const requestId = `r${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+    const key = cacheKey(info);
 
     // Cached? Re-insert without spending anything.
-    const hit = cache.get(anchorId);
+    const hit = cache.get(key);
     if (hit) {
-      insertCached(info, hit, anchorId);
+      const { host, shadow } = makeHost(key);
+      try {
+        insertAt(info.range, host);
+      } catch (e) {
+        announce("The page changed; the cached addition was discarded.");
+        return;
+      }
+      hosts.set(key, host);
+      renderAddition(host, shadow, { text: hit.text, model: hit.model, cost: hit.cost, cached: true });
       return;
     }
 
-    const { host, shadow } = makeHost(anchorId);
-    insertAt(info.range, host);
-    hosts.set(anchorId, host);
+    const { host, shadow } = makeHost(key);
+    try {
+      insertAt(info.range, host);
+    } catch (e) {
+      announce("Could not insert here.");
+      return;
+    }
+    hosts.set(key, host);
 
     const loading = document.createElement("span");
     loading.className = "loading";
     loading.textContent = " …";
-    shadow.appendChild(loading);
+    const cancel = document.createElement("button");
+    cancel.className = "minus";
+    cancel.type = "button";
+    cancel.textContent = "×";
+    cancel.title = "Cancel this request";
+    cancel.setAttribute("aria-label", "Cancel this request");
+    cancel.addEventListener("mousedown", (e) => e.preventDefault());
+    cancel.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        chrome.runtime.sendMessage({ v: 1, type: "STRETCH_CANCEL", requestId });
+      } catch (_) {
+        /* the worker may be gone; the local host is removed anyway */
+      }
+      removeHost(host, key);
+      pending.delete(requestId);
+      announce("Cancelled. The provider may still have billed the request.");
+    });
+    shadow.append(loading, cancel);
     announce("Stretching…");
 
-    pending.set(requestId, { anchorId, host, shadow, range: info.range.cloneRange() });
+    const requestId = `r${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+    pending.set(requestId, { key, host, shadow });
 
     let res;
     try {
@@ -347,49 +408,43 @@
         v: 1,
         type: "STRETCH_REQUEST",
         requestId,
-        anchorId,
+        anchorId: key,
         documentId: DOC_ID,
         selection: info.text,
         before: info.before,
         after: info.after,
       });
     } catch (e) {
-      res = { ok: false, error: { code: "PROVIDER_ERROR", message: "STRETCH could not reach its background worker." } };
+      res = {
+        ok: false,
+        error: { code: "PROVIDER_ERROR", message: "STRETCH could not reach its background worker." },
+      };
     }
     pending.delete(requestId);
     if (!host.isConnected) return; // the host was removed while we waited
 
     if (!res || !res.ok) {
       const err = (res && res.error) || { code: "PROVIDER_ERROR", message: "Something went wrong." };
-      showError(host, shadow, err.message || "Something went wrong.");
+      // Leave no trace in the author's paragraph: report through the live region.
+      removeHost(host, key);
+      announce(`Stretch failed: ${err.message || "Something went wrong."}`);
       return;
     }
     const entry = { text: res.body, model: res.model, cost: res.estimatedPollen };
-    cache.set(anchorId, entry);
+    cache.set(key, entry);
     renderAddition(host, shadow, { text: entry.text, model: entry.model, cost: entry.cost, cached: false });
-  }
-
-  function insertCached(info, entry, anchorId) {
-    const { host, shadow } = makeHost(anchorId);
-    insertAt(info.range, host);
-    hosts.set(anchorId, host);
-    renderAddition(host, shadow, { text: entry.text, model: entry.model, cost: entry.cost, cached: true });
   }
 
   /* ----------------------------------------------------------------- wiring */
 
   document.addEventListener("selectionchange", onSelectionChange, { passive: true });
   document.addEventListener("mousedown", onMouseDown, { passive: true });
-  document.addEventListener("keyup", onMouseDown, { passive: true });
+  document.addEventListener("keydown", onKeyDown, { passive: true });
 
   if (chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg && msg.type === "STRETCH_REMOVE_ALL") {
         removeAll();
-        sendResponse({ ok: true });
-        return false;
-      }
-      if (msg && msg.type === "STRETCH_HIGHLIGHT") {
         sendResponse({ ok: true });
         return false;
       }

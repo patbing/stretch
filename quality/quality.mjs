@@ -8,7 +8,7 @@
  * (the key is read from the environment only; it is never written to disk)
  */
 import { SYSTEM_PROMPT, buildUserMessage } from "../lib/prompt.js";
-import { validateOutput, estimateCost } from "../lib/validate.js";
+import { validateOutput, estimateCost, LIMITS } from "../lib/validate.js";
 
 const KEY = process.env.POL_KEY;
 const MODEL = process.env.POL_MODEL || "deepseek/deepseek-v4.1-flash";
@@ -47,7 +47,7 @@ async function call(c) {
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: buildUserMessage({ selection: c.sel, before: c.before, after: c.after }) },
     ],
-    max_tokens: 400,
+    max_tokens: LIMITS.maxTokens,
     stream: false,
   };
   const t0 = Date.now();

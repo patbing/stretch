@@ -26,11 +26,16 @@ async function start() {
   clearError();
   $("start").disabled = true;
   $("start").textContent = "Requesting…";
-  const res = await chrome.runtime.sendMessage({ v: 1, type: "DEVICE_CODE" });
+  let res = null;
+  try {
+    res = await chrome.runtime.sendMessage({ v: 1, type: "DEVICE_CODE" });
+  } catch (e) {
+    res = null;
+  }
   if (!res || !res.ok) {
     $("start").disabled = false;
     $("start").textContent = "Get a sign-in code";
-    showError((res && res.error && res.error.message) || "Could not start the sign-in flow.");
+    showError((res && res.error && res.error.message) || "Could not reach the background worker.");
     return;
   }
   state = {
@@ -73,6 +78,8 @@ async function poll() {
   try {
     const res = await chrome.runtime.sendMessage({ v: 1, type: "DEVICE_TOKEN" });
     if (res && res.ok) {
+      clearInterval(timer);
+      clearTimeout(timer2);
       $("step2").classList.add("hide");
       $("step3").classList.remove("hide");
       $("done").textContent = "✓ Connected to Pollinations.";
@@ -82,8 +89,25 @@ async function poll() {
       schedulePoll(state.interval * 1000);
       return;
     }
+    const code = (res && res.error && res.error.code) || "";
+    if (code === "OFFLINE" || code === "PROVIDER_ERROR") {
+      // a transient failure must not end the sign-in: retry until it expires
+      if (Date.now() < state.expiresAt) {
+        showError("Still trying to reach Pollinations…");
+        schedulePoll(Math.max(state.interval, 8) * 1000);
+        return;
+      }
+    }
     showError((res && res.error && res.error.message) || "Sign-in did not complete.");
+    $("start").disabled = false;
+    $("start").textContent = "Start again";
+    $("step2").classList.add("hide");
+    $("step1").classList.remove("hide");
   } catch (e) {
+    if (Date.now() < state.expiresAt) {
+      schedulePoll(Math.max(state.interval, 8) * 1000);
+      return;
+    }
     showError("Could not reach the background worker.");
   } finally {
     polling = false;
