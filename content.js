@@ -188,6 +188,12 @@
     } catch (e) {
       return false;
     }
+    // the surrounding context must still be the same, and the selection must
+    // still be allowed (the page may have turned the paragraph into an editor)
+    const ctx = contextFor(r);
+    if (!ctx) return false;
+    if (ctx.before !== info.before || ctx.after !== info.after) return false;
+    if (!rangeContentsAreSafe(r)) return false;
     return true;
   }
 
@@ -438,7 +444,7 @@
       shadow.appendChild(c);
       setTimeout(() => c.remove(), 4000);
     }
-    if (cost !== null && cost !== undefined) {
+    if (cost !== null && cost !== undefined && Number.isFinite(cost)) {
       const c = document.createElement("span");
       c.className = "cost";
       c.textContent = `estimated cost ${cost.toFixed(6)} Pollen`;
@@ -545,7 +551,10 @@
     }
     pending.delete(requestId);
     if (controller.aborted) return;
-    if (!host.isConnected) return; // the host was removed while we waited
+    if (!host.isConnected) {
+      hosts.delete(anchorId); // the host was removed while we waited
+      return;
+    }
     // The page may have rewritten the text while we waited: do not insert an
     // answer that no longer matches the sentence.
     if (!stillValid(info)) {

@@ -39,6 +39,8 @@ const SESSION_STORAGE = "stretchSession";
 
 /** In-flight requests, so we can cancel them per tab. */
 const inFlight = new Map();
+/** Cancellations that arrived before the request was registered. */
+const cancelled = new Set();
 
 /* ------------------------------------------------------------------ storage */
 
@@ -160,9 +162,21 @@ export async function handleStretchRequest(payload, deps = {}) {
     stream: false,
   };
 
-  // The serialized user message must stay inside the documented budget.
+  // The serialized user message must stay inside the documented budget: keep
+  // the selection, trim the surrounding context until it fits.
   if (byteLength(body.messages[1].content) > LIMITS.userMessageMaxBytes) {
-    return fail("UNSUPPORTED_SELECTION", "The selected context is too long to send.");
+    const keep = (sel) => String(sel ?? "");
+    let b = keep(req.before);
+    let a = keep(req.after);
+    while (
+      byteLength(JSON.stringify({ selection: req.selection, before: b, after: a })) >
+      LIMITS.userMessageMaxBytes &&
+      (b.length || a.length)
+    ) {
+      if (b.length >= a.length) b = b.slice(1);
+      else a = a.slice(0, -1);
+    }
+    body.messages[1].content = JSON.stringify({ selection: req.selection, before: b, after: a });
   }
 
   let res;
@@ -191,7 +205,13 @@ export async function handleStretchRequest(payload, deps = {}) {
     } catch (_) {
       /* ignore */
     }
-    const mapped = mapUpstreamError(res.status, text, res.headers || {});
+    let retryAfter = null;
+    try {
+      retryAfter = res.headers && res.headers.get ? res.headers.get("retry-after") : null;
+    } catch (e) {
+      retryAfter = null;
+    }
+    const mapped = mapUpstreamError(res.status, text, retryAfter ? { "retry-after": retryAfter } : {});
     // Only an explicit auth rejection clears the stored credential; a balance
     // problem must keep the connection.
     if (mapped.code === "AUTH_REJECTED") {
@@ -233,7 +253,10 @@ export async function handleStretchRequest(payload, deps = {}) {
       promptTokens: usage.prompt_tokens || 0,
       completionTokens: usage.completion_tokens || 0,
     },
-    estimatedPollen: cost ? cost.pollen : null,
+    estimatedPollen:
+      cost && usage.prompt_tokens !== undefined && usage.completion_tokens !== undefined
+        ? cost.pollen
+        : null,
   };
 }
 
@@ -317,6 +340,13 @@ export async function handleDeviceToken({ fetchImpl = fetch, sessionId = "" } = 
     data = {};
   }
   if (data && data.access_token) {
+    await guardStorage();
+    if (!storageGuarded) {
+      return fail(
+        "PROVIDER_ERROR",
+        "STRETCH could not protect its stored key, so the sign-in was not completed.",
+      );
+    }
     await chrome.storage.local.set({
       [KEY_STORAGE]: { accessToken: data.access_token, connectedAt: Date.now(), expiresAt: null },
     });
@@ -347,6 +377,15 @@ export async function handleDeviceToken({ fetchImpl = fetch, sessionId = "" } = 
   if (err === "expired_token" || err === "access_denied") {
     await chrome.storage.session.remove(SESSION_STORAGE);
     return fail("AUTH_REJECTED", "The sign-in request was denied or expired. Start again.");
+  }
+  if (res.status >= 500 || res.status === 429) {
+    // transient: the connect page keeps polling
+    return { ok: false, pending: true, interval: session.interval || 5,
+             error: { code: "PENDING", message: "Still trying." } };
+  }
+  if (!res.ok) {
+    return { ok: false, pending: true, interval: session.interval || 5,
+             error: { code: "PENDING", message: "Still trying." } };
   }
   return fail("AUTH_REJECTED", "Could not complete sign-in. Start again.");
 }
@@ -422,19 +461,24 @@ export async function dispatch(msg, sender) {
   }
   switch (msg.type) {
     case "STRETCH_REQUEST": {
-      // Never touch a credential while the storage guard is not in place.
-      await guardStorage();
-      if (!storageGuarded) {
-        return fail(
-          "PROVIDER_ERROR",
-          "STRETCH could not protect its stored key, so it will not call the model.",
-        );
-      }
-      // Register the request BEFORE awaiting anything, so a cancel that arrives
-      // during the storage reads still finds it.
+      // Register the request BEFORE any await, so a cancel that arrives during
+      // the storage reads still finds it.
       const controller = new AbortController();
       const tabId = sender && sender.tab ? sender.tab.id : 0;
-      const key = `${msg.requestId || ""}:${tabId}`;
+      const requestId = String(msg.requestId || "");
+      if (!requestId || requestId.length > 64) {
+        return fail("UNSUPPORTED_SELECTION", "Bad request id.");
+      }
+      const key = `${requestId}:${tabId}`;
+      if (inFlight.has(key)) {
+        return fail("UNSUPPORTED_SELECTION", "That request is already running.");
+      }
+      // one generation per tab
+      for (const k of inFlight.keys()) {
+        if (k.endsWith(`:${tabId}`)) {
+          return fail("UNSUPPORTED_SELECTION", "A stretch is already running in this tab.");
+        }
+      }
       let timedOut = false;
       const timer = setTimeout(() => {
         timedOut = true;
@@ -442,6 +486,18 @@ export async function dispatch(msg, sender) {
       }, LIMITS.requestTimeoutMs);
       inFlight.set(key, controller);
       try {
+        // Never touch a credential while the storage guard is not in place.
+        await guardStorage();
+        if (!storageGuarded) {
+          return fail(
+            "PROVIDER_ERROR",
+            "STRETCH could not protect its stored key, so it will not call the model.",
+          );
+        }
+        if (cancelled.has(key)) {
+          cancelled.delete(key);
+          return fail("CANCELLED", "Cancelled.");
+        }
         const token = await getKey();
         const model = await getModel();
         const pricing = await getPricing();
@@ -455,12 +511,15 @@ export async function dispatch(msg, sender) {
         clearTimeout(timer);
         // only delete our own entry: a newer request with the same id must survive
         if (inFlight.get(key) === controller) inFlight.delete(key);
+        cancelled.delete(key);
       }
     }
     case "STRETCH_CANCEL": {
       // cancel only this request in this tab
       const tabId = sender && sender.tab ? sender.tab.id : 0;
       const key = `${msg.requestId || ""}:${tabId}`;
+      // remember the cancellation: it may arrive before the request registers
+      cancelled.add(key);
       const c = inFlight.get(key);
       if (c) c.abort();
       return { v: 1, type: "STRETCH_CANCELLED", requestId: msg.requestId };
