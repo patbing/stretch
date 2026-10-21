@@ -48,6 +48,7 @@ const { handleStretchRequest, refreshPricing, handleDeviceCode, handleDeviceToke
   await import("../background.js");
 
 const REQ = {
+  v: 1,
   type: "STRETCH_REQUEST",
   selection: "photosynthesis",
   before: "Plants use ",
@@ -160,6 +161,29 @@ test("a generation request from an extension page is refused", async () => {
 
 test("a generation request without a tab is refused", async () => {
   const res = await dispatch({ ...REQ }, { id: "stretchtestextensionid", url: "https://example.com" });
+  assert.equal(res.ok, false);
+});
+
+test("a page may not drive the privileged commands", async () => {
+  for (const type of ["DEVICE_CODE", "DEVICE_TOKEN", "DISCONNECT", "SET_MODEL", "ACTIVATE_TAB"]) {
+    const res = await dispatch({ v: 1, type, model: "openai/gpt-5.4-nano" }, CONTENT_SENDER);
+    assert.equal(res.ok, false, `${type} must not be accepted from a page`);
+    assert.equal(res.error.code, "UNSUPPORTED_SELECTION");
+  }
+});
+
+test("a message without the expected version is refused", async () => {
+  const res = await dispatch({ ...REQ, v: 2 }, CONTENT_SENDER);
+  assert.equal(res.ok, false);
+});
+
+test("a sender from another extension is refused", async () => {
+  const res = await dispatch({ ...REQ }, { id: "someotherextension", tab: { id: 7 }, url: "https://example.com" });
+  assert.equal(res.ok, false);
+});
+
+test("a sub-frame may not ask for a generation", async () => {
+  const res = await dispatch({ ...REQ }, { id: "stretchtestextensionid", tab: { id: 7 }, frameId: 3, url: "https://example.com" });
   assert.equal(res.ok, false);
 });
 

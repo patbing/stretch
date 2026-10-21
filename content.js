@@ -8,12 +8,17 @@
  *  - it never sees a credential: the Pollinations key lives in the service
  *    worker, and this script only sends bounded text;
  *  - it renders the generated addition as plain text nodes.
+ *
+ * Two identities, kept apart on purpose:
+ *  - anchorId  : one inserted element (unique). Used for DOM tracking.
+ *  - cacheKey  : the content of a stretch (selection + paragraph context).
+ *                Used so shrinking and re-expanding costs nothing.
  */
 (() => {
   if (window.__stretchLoaded) return;
   window.__stretchLoaded = true;
 
-  const HOST_ATTR = "data-stretch-host";
+  const HOST_ATTR = "data-stretch-anchor";
   const DOC_ID =
     (crypto && crypto.randomUUID && crypto.randomUUID()) ||
     `d${Date.now()}${Math.random().toString(16).slice(2)}`;
@@ -33,22 +38,28 @@
   }
   /** Stable key for one stretch — inlined copy of lib/anchor.js. */
   function cacheKey(info) {
-    const sel = String(info.selection || "").trim();
-    const b = String(info.before || "").trim().slice(-200);
-    const a = String(info.after || "").trim().slice(0, 200);
-    return `k${hashString(sel + " " + b + " " + a)}`;
+    const i = info || {};
+    const sel = String(i.selection ?? i.text ?? "").trim();
+    const b = String(i.before ?? "").trim().slice(-200);
+    const a = String(i.after ?? "").trim().slice(0, 200);
+    return `k${hashString(sel + "\u0000" + b + "\u0000" + a)}`;
+  }
+  /** A fresh DOM identity for one inserted element. */
+  function newAnchorId() {
+    return `a${Date.now().toString(36)}${Math.random().toString(16).slice(2, 10)}`;
   }
 
-  /** key -> { text, model, cost } for results that were already paid for. */
+  /** content cache key -> { text, model, cost } for results that were already paid for. */
   const cache = new Map();
-  /** key -> host element currently in the page. */
+  /** anchorId -> host element currently in the page (DOM identity). */
   const hosts = new Map();
-  /** requestId -> { key, host, shadow } */
+  /** requestId -> { anchorId, host, shadow, controller } */
   const pending = new Map();
 
   let savedInfo = null;
   let floatBtn = null;
   let liveRegion = null;
+  let toast = null;
   let selTimer = null;
 
   /* ------------------------------------------------------------- utilities */
@@ -61,7 +72,6 @@
     while (el && el.nodeType === Node.ELEMENT_NODE) {
       const display = window.getComputedStyle(el).display;
       if (display !== "inline" && display !== "inline-block" && display !== "contents") {
-        // a block container that is not the whole document body
         if (el !== document.body && el !== document.documentElement) return el;
       }
       el = el.parentElement;
@@ -127,7 +137,7 @@
     const range = sel.getRangeAt(0);
     const text = range.toString();
     if (!text || !text.trim()) return null;
-    if (cpLen(text) > SEL_MAX) return { error: "unsupported" };
+    if (cpLen(text) > SEL_MAX) return { error: "too long" };
 
     const startEl = range.startContainer.nodeType === Node.TEXT_NODE
       ? range.startContainer.parentElement
@@ -141,7 +151,21 @@
     const ctx = contextFor(range);
     if (!ctx) return { error: "multiblock" };
 
-    return { range, text, before: ctx.before, after: ctx.after };
+    return { range: range.cloneRange(), text, before: ctx.before, after: ctx.after };
+  }
+
+  /** Is the saved selection still the one the reader made? */
+  function stillValid(info) {
+    if (!info || !info.range) return false;
+    const r = info.range;
+    if (!r.startContainer || !r.startContainer.isConnected) return false;
+    if (!r.endContainer || !r.endContainer.isConnected) return false;
+    try {
+      if (r.toString() !== info.text) return false; // the text around it changed
+    } catch (e) {
+      return false;
+    }
+    return true;
   }
 
   /* ------------------------------------------------------------ live region */
@@ -163,6 +187,49 @@
     setTimeout(() => {
       el.textContent = text;
     }, 30);
+  }
+
+  /* -------------------------------------------------------------- the toast */
+
+  /** A visible, extension-owned notice that does not touch the article. */
+  function showToast(message, kind = "info") {
+    removeToast();
+    const host = document.createElement("div");
+    host.setAttribute("data-stretch-toast", "");
+    host.style.cssText =
+      "position:fixed;right:12px;bottom:12px;z-index:2147483647;max-width:320px;";
+    const shadow = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = `
+      .box{font:12.5px/1.5 -apple-system,"Segoe UI",system-ui,sans-serif;
+        background:${kind === "error" ? "#3d1418" : "#161b22"};
+        border:1px solid ${kind === "error" ? "#f85149" : "#30363d"};
+        color:#e6edf3;border-radius:8px;padding:10px 12px;
+        box-shadow:0 4px 16px rgba(0,0,0,.4);display:flex;gap:8px;align-items:flex-start}
+      button{all:unset;cursor:pointer;opacity:.6;margin-left:2px}
+      button:hover{opacity:1}
+    `;
+    const box = document.createElement("div");
+    box.className = "box";
+    const txt = document.createElement("span");
+    txt.textContent = message;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "×";
+    close.setAttribute("aria-label", "Dismiss");
+    close.addEventListener("click", removeToast);
+    box.append(txt, close);
+    shadow.append(style, box);
+    document.documentElement.appendChild(host);
+    toast = host;
+    setTimeout(removeToast, kind === "error" ? 12000 : 6000);
+  }
+
+  function removeToast() {
+    if (toast) {
+      toast.remove();
+      toast = null;
+    }
   }
 
   /* --------------------------------------------------------- floating button */
@@ -220,9 +287,21 @@
     selTimer = setTimeout(() => {
       if (pending.size > 0) return; // do not steal the UI while a request runs
       const info = selectionInfo();
-      if (!info || info.error) {
+      if (!info) {
         savedInfo = null;
         removeFloatBtn();
+        return;
+      }
+      if (info.error) {
+        savedInfo = null;
+        removeFloatBtn();
+        if (info.error === "too long") {
+          showToast("STRETCH: select up to 600 characters in one paragraph.", "error");
+        } else if (info.error === "editable") {
+          showToast("STRETCH does not touch editors or form fields.", "info");
+        } else if (info.error === "multiblock") {
+          showToast("STRETCH: select text inside one paragraph.", "error");
+        }
         return;
       }
       savedInfo = info;
@@ -268,9 +347,9 @@
     `;
   }
 
-  function makeHost(key) {
+  function makeHost(anchorId) {
     const host = document.createElement("span");
-    host.setAttribute(HOST_ATTR, key);
+    host.setAttribute(HOST_ATTR, anchorId);
     host.style.cssText = "display:inline;font:inherit;color:inherit;line-height:inherit;";
     const shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
@@ -286,16 +365,27 @@
     return r;
   }
 
-  function removeHost(hostEl, key) {
+  function removeHost(hostEl, anchorId) {
     if (hostEl && hostEl.isConnected) hostEl.remove();
-    hosts.delete(key);
+    hosts.delete(anchorId);
   }
 
+  /** Remove every addition this extension made in this document. */
   function removeAll() {
-    for (const [key, el] of Array.from(hosts.entries())) {
-      removeHost(el, key);
+    // cancel anything still running so it cannot keep billing
+    for (const [requestId, p] of Array.from(pending.entries())) {
+      try {
+        chrome.runtime.sendMessage({ v: 1, type: "STRETCH_CANCEL", requestId });
+      } catch (e) {
+        /* the worker may be gone */
+      }
+      pending.delete(requestId);
+      if (p.host && p.host.isConnected) p.host.remove();
     }
-    hosts.clear();
+    for (const [anchorId, el] of Array.from(hosts.entries())) {
+      if (el && el.isConnected) el.remove();
+      hosts.delete(anchorId);
+    }
     announce("All STRETCH additions removed.");
   }
 
@@ -314,8 +404,7 @@
     minus.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const key = hostEl.getAttribute(HOST_ATTR) || "";
-      removeHost(hostEl, key);
+      removeHost(hostEl, hostEl.getAttribute(HOST_ATTR) || "");
       announce("Addition removed.");
     });
     shadow.append(add, minus);
@@ -329,7 +418,7 @@
     if (cost !== null && cost !== undefined) {
       const c = document.createElement("span");
       c.className = "cost";
-      c.textContent = `~${cost.toFixed(6)} Pollen`;
+      c.textContent = `estimated cost ${cost.toFixed(6)} Pollen`;
       shadow.appendChild(c);
     }
     announce(cached ? "Cached addition restored." : "Addition inserted.");
@@ -349,30 +438,37 @@
     if (el && el.closest && el.closest(`[${HOST_ATTR}]`)) return;
 
     const key = cacheKey(info);
+    const anchorId = newAnchorId();
+
+    // The reader may have changed the text since the button appeared.
+    if (!stillValid(info)) {
+      showToast("STRETCH: the text changed — select it again.", "error");
+      return;
+    }
 
     // Cached? Re-insert without spending anything.
     const hit = cache.get(key);
     if (hit) {
-      const { host, shadow } = makeHost(key);
+      const { host, shadow } = makeHost(anchorId);
       try {
         insertAt(info.range, host);
       } catch (e) {
         announce("The page changed; the cached addition was discarded.");
         return;
       }
-      hosts.set(key, host);
+      hosts.set(anchorId, host);
       renderAddition(host, shadow, { text: hit.text, model: hit.model, cost: hit.cost, cached: true });
       return;
     }
 
-    const { host, shadow } = makeHost(key);
+    const { host, shadow } = makeHost(anchorId);
     try {
       insertAt(info.range, host);
     } catch (e) {
       announce("Could not insert here.");
       return;
     }
-    hosts.set(key, host);
+    hosts.set(anchorId, host);
 
     const loading = document.createElement("span");
     loading.className = "loading";
@@ -384,23 +480,26 @@
     cancel.title = "Cancel this request";
     cancel.setAttribute("aria-label", "Cancel this request");
     cancel.addEventListener("mousedown", (e) => e.preventDefault());
+    shadow.append(loading, cancel);
+    announce("Stretching…");
+
+    const requestId = `r${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+    const controller = { aborted: false };
+    pending.set(requestId, { anchorId, host, shadow, controller });
+
     cancel.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
+      controller.aborted = true;
       try {
         chrome.runtime.sendMessage({ v: 1, type: "STRETCH_CANCEL", requestId });
       } catch (_) {
         /* the worker may be gone; the local host is removed anyway */
       }
-      removeHost(host, key);
+      removeHost(host, anchorId);
       pending.delete(requestId);
       announce("Cancelled. The provider may still have billed the request.");
     });
-    shadow.append(loading, cancel);
-    announce("Stretching…");
-
-    const requestId = `r${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
-    pending.set(requestId, { key, host, shadow });
 
     let res;
     try {
@@ -408,7 +507,7 @@
         v: 1,
         type: "STRETCH_REQUEST",
         requestId,
-        anchorId: key,
+        anchorId,
         documentId: DOC_ID,
         selection: info.text,
         before: info.before,
@@ -421,13 +520,16 @@
       };
     }
     pending.delete(requestId);
+    if (controller.aborted) return;
     if (!host.isConnected) return; // the host was removed while we waited
 
     if (!res || !res.ok) {
       const err = (res && res.error) || { code: "PROVIDER_ERROR", message: "Something went wrong." };
-      // Leave no trace in the author's paragraph: report through the live region.
-      removeHost(host, key);
-      announce(`Stretch failed: ${err.message || "Something went wrong."}`);
+      // Leave no trace in the author's paragraph; report it visibly instead.
+      removeHost(host, anchorId);
+      const msg = err.message || "Something went wrong.";
+      showToast(`STRETCH: ${msg}`, "error");
+      announce(`Stretch failed: ${msg}`);
       return;
     }
     const entry = { text: res.body, model: res.model, cost: res.estimatedPollen };

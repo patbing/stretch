@@ -28,7 +28,7 @@ history, your Pollen account email, or any identifier.
 | Your Pollinations `sk_…` key | `chrome.storage.local` (your browser profile) | Until you disconnect or it expires (keys normally expire after 7 days) |
 | Your chosen model | `chrome.storage.local` | Until you change it |
 | Model price sheet | `chrome.storage.local` | Refreshed on connect |
-| Device code during sign-in | `chrome.storage.session` | Until sign-in finishes, expires, or the tab closes |
+| Device code during sign-in | `chrome.storage.session` | Until sign-in finishes or the request expires (30 min) |
 | Generated additions | The page itself (inline), and an in-memory cache in the tab | Until you remove them or close the tab |
 
 * The token is **not** in `localStorage`, not in the page, not in a URL, not in
@@ -41,9 +41,10 @@ history, your Pollen account email, or any identifier.
 ## What the site can see
 
 A generated addition is inserted into the page's DOM. **That site can read it**
-and can remove it. Shadow DOM is not a confidentiality boundary. If a page
-rewrites its own DOM under the cursor, STRETCH cancels the pending result
-rather than inserting text in the wrong place.
+and can remove it. Shadow DOM is not a confidentiality boundary. Before inserting,
+STRETCH checks that the selected text is still the text the reader selected; if the
+page rewrote that text in the meantime, the result is discarded instead of being
+inserted in the wrong place.
 
 ## No telemetry
 
@@ -51,7 +52,7 @@ STRETCH has no analytics, no crash reporting, no update pings and no user
 tracking. The only network requests it ever makes are:
 
 1. `POST https://enter.pollinations.ai/api/device/code` and
-   `POST https://enter.pollitations.ai/api/device/token` — sign-in only.
+   `POST https://enter.pollinations.ai/api/device/token` — sign-in only.
 2. `GET https://gen.pollinations.ai/v1/models` — to read prices and check that
    a model is tier-eligible.
 3. `POST https://gen.pollinations.ai/v1/chat/completions` — one per stretch you

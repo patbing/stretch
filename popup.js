@@ -32,6 +32,17 @@ async function render() {
     return;
   }
   $("model").value = s.model;
+  // only offer models the live catalogue confirms as usable with Quest Pollen
+  const sel = $("model");
+  const eligible = s.eligible && s.eligible.length ? s.eligible : s.models;
+  for (const opt of Array.from(sel.options)) {
+    const ok = eligible.includes(opt.value);
+    opt.disabled = !ok;
+    opt.textContent = ok
+      ? opt.textContent.replace(/ — unavailable.*$/, "")
+      : `${opt.textContent} — unavailable for Quest Pollen`;
+  }
+  if (!eligible.includes(s.model) && eligible.length) sel.value = eligible[0];
   // built with DOM nodes, never innerHTML
   el.replaceChildren();
   if (s.connected) {

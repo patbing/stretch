@@ -238,7 +238,7 @@ try {
   const hostState = () =>
     cdp.ev(
       `(() => {
-         const hosts = [...document.querySelectorAll("[data-stretch-host]")];
+         const hosts = [...document.querySelectorAll("[data-stretch-anchor]")];
          if (!hosts.length) return { count: 0 };
          const sh = hosts[0].shadowRoot;
          const add = sh.querySelector(".add");
@@ -276,7 +276,7 @@ try {
   // shrink it
   const minusBox = await cdp.ev(
     `(() => {
-       const h = document.querySelector("[data-stretch-host]");
+       const h = document.querySelector("[data-stretch-anchor]");
        if (!h) return null;
        const b = h.shadowRoot.querySelector(".minus");
        if (!b) return null;
@@ -353,7 +353,7 @@ try {
   await sleep(5000);
   const leftovers = await cdp.ev(
     `(() => {
-       const hosts = [...document.querySelectorAll("[data-stretch-host]")];
+       const hosts = [...document.querySelectorAll("[data-stretch-anchor]")];
        const errText = hosts.some(h => {
          const sh = h.shadowRoot;
          return sh && sh.querySelector(".err");

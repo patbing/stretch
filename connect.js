@@ -9,8 +9,11 @@
 const $ = (id) => document.getElementById(id);
 
 let timer = null;
+let timer2 = null;
 let state = { interval: 5, expiresAt: 0, userCode: "", verificationUriComplete: "", verificationUri: "" };
 let polling = false;
+/** This tab's sign-in session: the device code belongs to it. */
+const SESSION_ID = `s${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
 
 function showError(msg) {
   const el = $("err");
@@ -28,7 +31,7 @@ async function start() {
   $("start").textContent = "Requesting…";
   let res = null;
   try {
-    res = await chrome.runtime.sendMessage({ v: 1, type: "DEVICE_CODE" });
+    res = await chrome.runtime.sendMessage({ v: 1, type: "DEVICE_CODE", sessionId: SESSION_ID });
   } catch (e) {
     res = null;
   }
@@ -70,13 +73,11 @@ function schedulePoll(delayMs) {
   timer2 = setTimeout(poll, delayMs);
 }
 
-let timer2 = null;
-
 async function poll() {
   if (polling) return;
   polling = true;
   try {
-    const res = await chrome.runtime.sendMessage({ v: 1, type: "DEVICE_TOKEN" });
+    const res = await chrome.runtime.sendMessage({ v: 1, type: "DEVICE_TOKEN", sessionId: SESSION_ID });
     if (res && res.ok) {
       clearInterval(timer);
       clearTimeout(timer2);
@@ -86,6 +87,7 @@ async function poll() {
       return;
     }
     if (res && res.pending) {
+      if (res.interval) state.interval = Math.max(state.interval, res.interval);
       schedulePoll(state.interval * 1000);
       return;
     }

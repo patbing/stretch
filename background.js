@@ -17,6 +17,7 @@ import {
   DEFAULT_MODEL,
   LIMITS,
   REFERENCE_PRICING,
+  byteLength,
   estimateCost,
   mapUpstreamError,
   validateOutput,
@@ -33,6 +34,7 @@ const DEVICE_TOKEN_URL = `${ENTER_BASE}/api/device/token`;
 const KEY_STORAGE = "stretchKey";
 const MODEL_STORAGE = "stretchModel";
 const PRICING_STORAGE = "stretchPricing";
+const ELIGIBILITY_STORAGE = "stretchEligible";
 const SESSION_STORAGE = "stretchSession";
 
 /** In-flight requests, so we can cancel them per tab. */
@@ -52,9 +54,22 @@ async function getKeyRecord() {
 }
 
 async function getModel() {
-  const got = await chrome.storage.local.get(MODEL_STORAGE);
+  const got = await chrome.storage.local.get([MODEL_STORAGE, ELIGIBILITY_STORAGE]);
   const m = got && got[MODEL_STORAGE];
-  return ALLOWED_MODELS.includes(m) ? m : DEFAULT_MODEL;
+  const eligible = (got && got[ELIGIBILITY_STORAGE]) || null;
+  if (!ALLOWED_MODELS.includes(m)) return DEFAULT_MODEL;
+  // A model that the live catalogue no longer offers, or that has become
+  // paid-only, must not be called.
+  if (eligible && Array.isArray(eligible.models) && !eligible.models.includes(m)) {
+    return eligible.models[0] || DEFAULT_MODEL;
+  }
+  return m;
+}
+
+/** Models the live catalogue confirms as usable with Quest (tier) Pollen. */
+async function getEligible() {
+  const got = await chrome.storage.local.get(ELIGIBILITY_STORAGE);
+  return (got && got[ELIGIBILITY_STORAGE]) || null;
 }
 
 async function getPricing() {
@@ -83,9 +98,10 @@ export async function refreshPricing({ fetchImpl = fetch, token } = {}) {
   }
   const items = (data && data.data) || [];
   const next = { ...REFERENCE_PRICING };
+  const eligibleModels = [];
   for (const id of ALLOWED_MODELS) {
     const m = items.find((x) => x && x.id === id);
-    if (!m) continue;
+    if (!m) continue; // not in the catalogue: not offered
     if (m.paid_only === true) continue; // never surface a paid-only model
     const p = m.pricing || {};
     const inRate = Number(p.promptTextTokens);
@@ -93,9 +109,13 @@ export async function refreshPricing({ fetchImpl = fetch, token } = {}) {
     if (Number.isFinite(inRate) && Number.isFinite(outRate)) {
       next[id] = { promptTextTokens: inRate, completionTextTokens: outRate };
     }
+    eligibleModels.push(id);
   }
   await setPricing(next);
-  return { ok: true, pricing: next };
+  await chrome.storage.local.set({
+    [ELIGIBILITY_STORAGE]: { models: eligibleModels, checkedAt: Date.now() },
+  });
+  return { ok: true, pricing: next, eligible: eligibleModels };
 }
 
 /* ------------------------------------------------------------- generation */
@@ -130,6 +150,11 @@ export async function handleStretchRequest(payload, deps = {}) {
     stream: false,
   };
 
+  // The serialized user message must stay inside the documented budget.
+  if (byteLength(body.messages[1].content) > LIMITS.userMessageMaxBytes) {
+    return fail("UNSUPPORTED_SELECTION", "The selected context is too long to send.");
+  }
+
   let res;
   try {
     res = await fetchImpl(CHAT_URL, {
@@ -140,7 +165,11 @@ export async function handleStretchRequest(payload, deps = {}) {
     });
   } catch (e) {
     if (e && e.name === "AbortError") {
-      return fail("CANCELLED", "Cancelled.");
+      // the caller distinguishes a timeout from a user cancel
+      const timedOut = typeof deps.timedOut === "function" ? deps.timedOut() : !!deps.timedOut;
+      return fail(timedOut ? "TIMEOUT" : "CANCELLED", timedOut
+        ? "The model took too long. Try a shorter selection."
+        : "Cancelled.");
     }
     return fail("OFFLINE", "Offline. Check your connection and try again.");
   }
@@ -153,6 +182,14 @@ export async function handleStretchRequest(payload, deps = {}) {
       /* ignore */
     }
     const mapped = mapUpstreamError(res.status, text);
+    // A rejected credential must not stay behind as a false "Connected".
+    if (mapped.code === "AUTH_REJECTED") {
+      try {
+        await chrome.storage.local.remove([KEY_STORAGE]);
+      } catch (e) {
+        /* ignore */
+      }
+    }
     return { ok: false, error: mapped };
   }
 
@@ -195,7 +232,7 @@ function fail(code, message) {
 
 /* ------------------------------------------------------------ device flow */
 
-export async function handleDeviceCode({ fetchImpl = fetch } = {}) {
+export async function handleDeviceCode({ fetchImpl = fetch, sessionId = "" } = {}) {
   let res;
   try {
     res = await fetchImpl(DEVICE_CODE_URL, {
@@ -223,6 +260,7 @@ export async function handleDeviceCode({ fetchImpl = fetch } = {}) {
       interval: Number(data.interval) || 5,
       expiresAt: Date.now() + (Number(data.expires_in) || 1800) * 1000,
       startedAt: Date.now(),
+      sessionId: sessionId || "",
     },
   });
   return {
@@ -236,11 +274,15 @@ export async function handleDeviceCode({ fetchImpl = fetch } = {}) {
   };
 }
 
-export async function handleDeviceToken({ fetchImpl = fetch } = {}) {
+export async function handleDeviceToken({ fetchImpl = fetch, sessionId = "" } = {}) {
   const got = await chrome.storage.session.get(SESSION_STORAGE);
   const session = (got && got[SESSION_STORAGE]) || null;
   if (!session || !session.deviceCode) {
     return fail("AUTH_REQUIRED", "Start the sign-in flow first.");
+  }
+  // A device session belongs to the tab that started it.
+  if (session.sessionId && sessionId && session.sessionId !== sessionId) {
+    return fail("AUTH_REJECTED", "This sign-in request belongs to another tab.");
   }
   if (session.expiresAt && Date.now() > session.expiresAt) {
     await chrome.storage.session.remove(SESSION_STORAGE);
@@ -274,7 +316,17 @@ export async function handleDeviceToken({ fetchImpl = fetch } = {}) {
   }
   const err = (data && data.error) || "";
   if (err === "authorization_pending" || err === "slow_down") {
-    return { ok: false, pending: true, error: { code: "PENDING", message: "Waiting for approval." } };
+    if (err === "slow_down") {
+      // back off as the provider asks
+      session.interval = Math.min(30, (session.interval || 5) + 5);
+      await chrome.storage.session.set({ [SESSION_STORAGE]: session });
+    }
+    return {
+      ok: false,
+      pending: true,
+      interval: session.interval || 5,
+      error: { code: "PENDING", message: "Waiting for approval." },
+    };
   }
   if (err === "expired_token" || err === "access_denied") {
     await chrome.storage.session.remove(SESSION_STORAGE);
@@ -289,12 +341,14 @@ export async function handleStatus() {
   const token = await getKey();
   const model = await getModel();
   const pricing = await getPricing();
+  const eligible = await getEligible();
   const cost = estimateCost({ model, promptTokens: 1500, completionTokens: 400, pricing });
   return {
     ok: true,
     connected: !!token,
     model,
     models: ALLOWED_MODELS,
+    eligible: (eligible && eligible.models) || null,
     typicalPollen: cost ? cost.typical : null,
     heavyPollen: cost ? cost.heavy : null,
   };
@@ -304,13 +358,28 @@ export async function handleStatus() {
 
 /** Which message types may only come from a content script in a web page. */
 const CONTENT_ONLY = new Set(["STRETCH_REQUEST", "STRETCH_CANCEL"]);
+/** Which message types may only come from an extension page (popup/connect). */
+const PRIVILEGED_ONLY = new Set(["DEVICE_CODE", "DEVICE_TOKEN", "DISCONNECT", "SET_MODEL", "REFRESH_PRICING", "ACTIVATE_TAB"]);
 
 function senderIsContentScript(sender) {
   if (!sender) return false;
+  if (sender.id && chrome.runtime && chrome.runtime.id && sender.id !== chrome.runtime.id) return false;
   if (!sender.tab || !sender.tab.id) return false;
+  if (typeof sender.frameId === "number" && sender.frameId !== 0) return false; // top frame only
   const url = sender.url || "";
-  // an extension page is not a content script
   if (url.startsWith("chrome-extension://")) return false;
+  if (!/^https?:\/\//i.test(url)) return false;
+  return true;
+}
+
+function senderIsExtensionPage(sender) {
+  if (!sender) return false;
+  if (sender.id && chrome.runtime && chrome.runtime.id && sender.id !== chrome.runtime.id) return false;
+  const url = sender.url || "";
+  if (!url.startsWith("chrome-extension://")) return false;
+  if (chrome.runtime && chrome.runtime.id && !url.startsWith(`chrome-extension://${chrome.runtime.id}/`)) {
+    return false;
+  }
   return true;
 }
 
@@ -318,25 +387,38 @@ export async function dispatch(msg, sender) {
   if (!msg || typeof msg.type !== "string") {
     return fail("PROVIDER_ERROR", "Unknown message.");
   }
+  if (typeof msg.v !== "number" || msg.v !== 1) {
+    return fail("PROVIDER_ERROR", "Unsupported message version.");
+  }
   // Sender boundary: a page may not ask for a generation on behalf of another
-  // tab, and an extension page may not inject into pages it was not opened for.
+  // tab, and only our own extension pages may drive the privileged commands.
   if (CONTENT_ONLY.has(msg.type) && !senderIsContentScript(sender)) {
     return fail("UNSUPPORTED_SELECTION", "This request may only come from a page.");
   }
+  if (PRIVILEGED_ONLY.has(msg.type) && !senderIsExtensionPage(sender)) {
+    return fail("UNSUPPORTED_SELECTION", "This command may only come from the extension.");
+  }
   switch (msg.type) {
     case "STRETCH_REQUEST": {
-      const token = await getKey();
-      const model = await getModel();
-      const pricing = await getPricing();
+      // Register the request BEFORE awaiting anything, so a cancel that arrives
+      // during the storage reads still finds it.
       const controller = new AbortController();
-      const key = `${msg.requestId || ""}:${sender && sender.tab ? sender.tab.id : ""}`;
-      const timer = setTimeout(() => controller.abort(), LIMITS.requestTimeoutMs);
+      const tabId = sender && sender.tab ? sender.tab.id : 0;
+      const key = `${msg.requestId || ""}:${tabId}`;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, LIMITS.requestTimeoutMs);
       inFlight.set(key, controller);
       try {
+        const token = await getKey();
+        const model = await getModel();
+        const pricing = await getPricing();
         // the worker owns the model: ignore any model the page may have sent
         const res = await handleStretchRequest(
-          { ...msg, model: undefined, requestId: msg.requestId, anchorId: msg.anchorId },
-          { token, model, pricing, signal: controller.signal },
+          { ...msg, model: undefined },
+          { token, model, pricing, signal: controller.signal, timedOut: () => timedOut },
         );
         return { v: 1, type: "STRETCH_RESULT", requestId: msg.requestId, anchorId: msg.anchorId, ...res };
       } finally {
@@ -345,17 +427,19 @@ export async function dispatch(msg, sender) {
       }
     }
     case "STRETCH_CANCEL": {
-      for (const [k, c] of inFlight) {
-        if (k.startsWith(`${msg.requestId || ""}:`)) c.abort();
-      }
+      // cancel only this request in this tab
+      const tabId = sender && sender.tab ? sender.tab.id : 0;
+      const key = `${msg.requestId || ""}:${tabId}`;
+      const c = inFlight.get(key);
+      if (c) c.abort();
       return { v: 1, type: "STRETCH_CANCELLED", requestId: msg.requestId };
     }
     case "STRETCH_STATUS":
       return await handleStatus();
     case "DEVICE_CODE":
-      return await handleDeviceCode();
+      return await handleDeviceCode({ sessionId: msg.sessionId || "" });
     case "DEVICE_TOKEN":
-      return await handleDeviceToken();
+      return await handleDeviceToken({ sessionId: msg.sessionId || "" });
     case "DISCONNECT": {
       await chrome.storage.local.remove([KEY_STORAGE]);
       await chrome.storage.session.remove(SESSION_STORAGE);
@@ -389,28 +473,34 @@ export async function dispatch(msg, sender) {
   }
 }
 
+// The Pollinations key must not be readable by content scripts.
+// chrome.storage.local is exposed to content scripts by default, so restrict it
+// BEFORE any message is handled, and keep working if the call is unavailable.
+let storageGuarded = false;
+async function guardStorage() {
+  try {
+    if (chrome.storage && chrome.storage.local && chrome.storage.local.setAccessLevel) {
+      await chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+    }
+    if (chrome.storage && chrome.storage.session && chrome.storage.session.setAccessLevel) {
+      await chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+    }
+    storageGuarded = true;
+  } catch (e) {
+    storageGuarded = false;
+  }
+}
+
 if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  const listener = (msg, sender, sendResponse) => {
     dispatch(msg, sender)
       .then((r) => sendResponse(r))
       .catch((e) =>
         sendResponse({ ok: false, error: { code: "PROVIDER_ERROR", message: String(e && e.message) } }),
       );
     return true; // async response
+  };
+  guardStorage().then(() => {
+    chrome.runtime.onMessage.addListener(listener);
   });
-}
-
-// The Pollinations key must not be readable by content scripts.
-// chrome.storage.local is exposed to content scripts by default, so restrict it.
-if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-  try {
-    chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
-  } catch (e) {
-    /* older Chrome: ignore */
-  }
-  try {
-    chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
-  } catch (e) {
-    /* ignore */
-  }
 }

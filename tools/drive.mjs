@@ -284,7 +284,7 @@ try {
     await sleep(1000);
     state = await cdp.evaluate(
       `(() => {
-         const hosts = [...document.querySelectorAll("[data-stretch-host]")];
+         const hosts = [...document.querySelectorAll("[data-stretch-anchor]")];
          if (!hosts.length) return { ready: false };
          const sh = hosts[0].shadowRoot;
          const add = sh.querySelector(".add");
