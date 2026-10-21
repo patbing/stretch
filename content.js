@@ -194,6 +194,48 @@
     if (!ctx) return false;
     if (ctx.before !== info.before || ctx.after !== info.after) return false;
     if (!rangeContentsAreSafe(r)) return false;
+    // the endpoints must still be outside an editor
+    const startEl = r.startContainer.nodeType === Node.TEXT_NODE
+      ? r.startContainer.parentElement
+      : r.startContainer;
+    const endEl = r.endContainer.nodeType === Node.TEXT_NODE
+      ? r.endContainer.parentElement
+      : r.endContainer;
+    if (isEditableContext(startEl) || isEditableContext(endEl)) return false;
+    return true;
+  }
+
+  /**
+   * Is the inserted host still exactly where we put it?
+   * The host sits between the selected text and the text that followed it, so
+   * we check both sides instead of trusting the DOM.
+   */
+  function hostStillAtEnd(hostEl, info) {
+    if (!hostEl || !hostEl.isConnected) return false;
+    const r = info && info.range;
+    if (!r) return false;
+    const endEl = r.endContainer.nodeType === Node.TEXT_NODE ? r.endContainer.parentElement : r.endContainer;
+    if (!endEl || hostEl.parentNode !== endEl) return false;
+
+    // the text before the host must still end with the selection
+    let before = "";
+    let n = hostEl.previousSibling;
+    while (n) {
+      before = n.textContent || "";
+      n = n.previousSibling;
+      if (before) break; // the nearest text node carries the tail
+    }
+    if (info.text && !before.trimEnd().endsWith(info.text)) return false;
+
+    // the text after the host must still start with the context that followed
+    let after = "";
+    n = hostEl.nextSibling;
+    while (n && !after.trim()) {
+      after = n.textContent || "";
+      n = n.nextSibling;
+    }
+    const expected = (info.after || "").trim().slice(0, 40);
+    if (expected && !after.trimStart().startsWith(expected)) return false;
     return true;
   }
 
@@ -469,7 +511,8 @@
     const key = cacheKey(info);
     const anchorId = newAnchorId();
 
-    // The reader may have changed the text since the button appeared.
+    // The reader may have changed the text since the button appeared, and the
+    // page may have turned the paragraph into an editor in the meantime.
     if (!stillValid(info)) {
       showToast("STRETCH: the text changed — select it again.", "error");
       return;
@@ -557,7 +600,7 @@
     }
     // The page may have rewritten the text while we waited: do not insert an
     // answer that no longer matches the sentence.
-    if (!stillValid(info)) {
+    if (!stillValid(info) || !hostStillAtEnd(host, info)) {
       removeHost(host, anchorId);
       showToast("STRETCH: the text changed while I was writing — the answer was discarded.", "error");
       announce("The page changed; the answer was discarded.");

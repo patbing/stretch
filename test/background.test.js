@@ -113,7 +113,7 @@ test("the request never carries a page URL and always uses the allowlisted model
 });
 
 test("a page cannot choose the model: the worker's stored model wins", async () => {
-  store.local.stretchEligible = { models: ["openai/gpt-5.4-nano", "deepseek/deepseek-v4.1-flash"], checked: true };
+  store.local.stretchEligible = { models: ["openai/gpt-5.4-nano", "deepseek/deepseek-v4.1-flash"], checked: true, checkedAt: Date.now() };
   store.local.stretchModel = "deepseek/deepseek-v4.1-flash";
   store.local.stretchKey = { accessToken: "sk_test", connectedAt: Date.now(), expiresAt: null };
   const realFetch = globalThis.fetch;
@@ -135,7 +135,7 @@ test("a page cannot choose the model: the worker's stored model wins", async () 
 });
 
 test("the worker's stored model is what reaches the API", async () => {
-  store.local.stretchEligible = { models: ["openai/gpt-5.4-nano", "deepseek/deepseek-v4.1-flash"], checked: true };
+  store.local.stretchEligible = { models: ["openai/gpt-5.4-nano", "deepseek/deepseek-v4.1-flash"], checked: true, checkedAt: Date.now() };
   store.local.stretchModel = "deepseek/deepseek-v4.1-flash";
   store.local.stretchKey = { accessToken: "sk_test", connectedAt: Date.now(), expiresAt: null };
   let seen = null;
@@ -169,19 +169,24 @@ test("a generation request without a tab is refused", async () => {
 });
 
 test("with no Quest-eligible model the worker refuses to generate", async () => {
-  store.local.stretchEligible = { models: [], checkedAt: Date.now() };
+  // a fresh catalogue check that finds nothing usable
+  store.local.stretchEligible = { models: [], checked: true, checkedAt: Date.now() };
   store.local.stretchKey = { accessToken: "sk_test", connectedAt: Date.now(), expiresAt: null };
-  let called = false;
+  const urls = [];
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    called = true;
-    return jsonResponse({ choices: [{ message: { content: "x" } }], usage: {} });
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    return jsonResponse({ data: [] });
   };
   try {
     const res = await dispatch({ ...REQ }, CONTENT_SENDER);
     assert.equal(res.ok, false);
     assert.equal(res.error.code, "NO_ELIGIBLE_MODEL");
-    assert.equal(called, false, "no request may be made without an eligible model");
+    assert.equal(
+      urls.some((u) => u.includes("/v1/chat/completions")),
+      false,
+      "no generation may be requested without an eligible model",
+    );
   } finally {
     globalThis.fetch = realFetch;
     delete store.local.stretchEligible;

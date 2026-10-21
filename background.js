@@ -41,6 +41,8 @@ const SESSION_STORAGE = "stretchSession";
 const inFlight = new Map();
 /** Cancellations that arrived before the request was registered. */
 const cancelled = new Set();
+/** Sign-in sessions invalidated by a disconnect. */
+const sessionsInvalidated = new Set();
 
 /* ------------------------------------------------------------------ storage */
 
@@ -76,6 +78,32 @@ async function getModel() {
 async function getEligible() {
   const got = await chrome.storage.local.get(ELIGIBILITY_STORAGE);
   return (got && got[ELIGIBILITY_STORAGE]) || null;
+}
+
+/** How long a catalogue check stays trustworthy. */
+const ELIGIBILITY_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * The catalogue is the authority and it is only trusted for a while.
+ * Returns the eligible model id, or null when nothing may be called.
+ */
+async function resolveEligibleModel(token) {
+  const rec = await getEligible();
+  const age = rec && rec.checkedAt ? Date.now() - rec.checkedAt : Infinity;
+  if (!rec || !rec.checked || age > ELIGIBILITY_TTL_MS) {
+    // re-confirm at the spending boundary; if that fails we do not spend
+    const fresh = await refreshPricing({ token }).catch(() => null);
+    if (!fresh || !fresh.ok) return null;
+    const list = (await getEligible()) || {};
+    if (!Array.isArray(list.models) || !list.models.length) return null;
+    const stored = await getModel();
+    if (ALLOWED_MODELS.includes(stored) && list.models.includes(stored)) return stored;
+    return list.models[0];
+  }
+  if (!Array.isArray(rec.models) || !rec.models.length) return null;
+  const stored = await getModel();
+  if (ALLOWED_MODELS.includes(stored) && rec.models.includes(stored)) return stored;
+  return rec.models[0];
 }
 
 async function getPricing() {
@@ -173,8 +201,10 @@ export async function handleStretchRequest(payload, deps = {}) {
       LIMITS.userMessageMaxBytes &&
       (b.length || a.length)
     ) {
-      if (b.length >= a.length) b = b.slice(1);
-      else a = a.slice(0, -1);
+      const ba = Array.from(b);
+      const aa = Array.from(a);
+      if (ba.length >= aa.length) b = ba.slice(1).join("");
+      else a = aa.slice(0, -1).join("");
     }
     body.messages[1].content = JSON.stringify({ selection: req.selection, before: b, after: a });
   }
@@ -202,7 +232,13 @@ export async function handleStretchRequest(payload, deps = {}) {
     let text = "";
     try {
       text = await res.text();
-    } catch (_) {
+    } catch (e) {
+      if (e && e.name === "AbortError") {
+        const timedOut = typeof deps.timedOut === "function" ? deps.timedOut() : !!deps.timedOut;
+        return fail(timedOut ? "TIMEOUT" : "CANCELLED", timedOut
+          ? "The model took too long. Try a shorter selection."
+          : "Cancelled.");
+      }
       /* ignore */
     }
     let retryAfter = null;
@@ -228,6 +264,12 @@ export async function handleStretchRequest(payload, deps = {}) {
   try {
     data = await res.json();
   } catch (e) {
+    if (e && e.name === "AbortError") {
+      const timedOut = typeof deps.timedOut === "function" ? deps.timedOut() : !!deps.timedOut;
+      return fail(timedOut ? "TIMEOUT" : "CANCELLED", timedOut
+        ? "The model took too long. Try a shorter selection."
+        : "Cancelled.");
+    }
     return fail("PROVIDER_ERROR", "The provider returned an unreadable answer.");
   }
 
@@ -340,6 +382,15 @@ export async function handleDeviceToken({ fetchImpl = fetch, sessionId = "" } = 
     data = {};
   }
   if (data && data.access_token) {
+    // a disconnect that happened while we were polling invalidates this session
+    if (session.startedAt && sessionsInvalidated.size) {
+      for (const t of sessionsInvalidated) {
+        if (t >= session.startedAt) {
+          await chrome.storage.session.remove(SESSION_STORAGE);
+          return fail("AUTH_REJECTED", "The sign-in was disconnected. Start again.");
+        }
+      }
+    }
     await guardStorage();
     if (!storageGuarded) {
       return fail(
@@ -499,7 +550,7 @@ export async function dispatch(msg, sender) {
           return fail("CANCELLED", "Cancelled.");
         }
         const token = await getKey();
-        const model = await getModel();
+        const model = await resolveEligibleModel(token);
         const pricing = await getPricing();
         // the worker owns the model: ignore any model the page may have sent
         const res = await handleStretchRequest(
@@ -533,6 +584,8 @@ export async function dispatch(msg, sender) {
     case "DISCONNECT": {
       await chrome.storage.local.remove([KEY_STORAGE]);
       await chrome.storage.session.remove(SESSION_STORAGE);
+      // a late poll must not store a credential after a disconnect
+      sessionsInvalidated.add(Date.now());
       return { ok: true };
     }
     case "SET_MODEL": {
