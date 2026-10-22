@@ -103,6 +103,15 @@ currently reports as `paid_only: false`** — a model that is missing from the
 catalogue, or that has become paid-only, is dropped from the picker and is
 never called.
 
+**Community models are never offered.** Pollinations states that a community
+model's name is declared by its publisher and is not verified, so a community
+`claude-opus-5.5` may be a different model, and a request routed through one of
+those proxies can be refused by a filter the first-party models do not apply
+(for example, we measured two community `claude-opus-5.5` entries answering
+`HTTP 400 content_blocked` for *any* request that carries a `system` message,
+while every first-party model and five other community models answered the
+same request normally). STRETCH therefore offers only first-party models.
+
 ### Measured deviations from the design
 
 The design consult proposed three things that measurement changed. They are
