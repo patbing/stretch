@@ -161,6 +161,35 @@
         <a href="privacy.html">Privacy</a>.
       </p>
 
+      <h2>How it talks to Pollinations</h2>
+      <p>
+        The extension calls the Pollinations API directly, with the reader's own Pollen key
+        (Bring Your Own Pollen). Every call is in
+        <a href="https://github.com/patbing/stretch/blob/main/background.js" target="_blank" rel="noreferrer"><code>background.js</code></a>
+        — the service worker, the only part that ever holds the key:
+      </p>
+      <table>
+        <tr><th>Call</th><th>Endpoint</th></tr>
+        <tr>
+          <td>Sign in (device flow)</td>
+          <td><code>POST https://enter.pollinations.ai/api/device/code</code><br><code>POST https://enter.pollinations.ai/api/device/token</code></td>
+        </tr>
+        <tr>
+          <td>Model catalogue and prices</td>
+          <td><code>GET https://gen.pollinations.ai/v1/models</code></td>
+        </tr>
+        <tr>
+          <td>Generate the addition</td>
+          <td><code>POST https://gen.pollinations.ai/v1/chat/completions</code></td>
+        </tr>
+      </table>
+      <p class="note">
+        Plain-text source:
+        <a href="https://raw.githubusercontent.com/patbing/stretch/main/background.js" target="_blank" rel="noreferrer">background.js</a> ·
+        <a href="https://raw.githubusercontent.com/patbing/stretch/main/lib/prompt.js" target="_blank" rel="noreferrer">lib/prompt.js</a> ·
+        <a href="https://raw.githubusercontent.com/patbing/stretch/main/lib/validate.js" target="_blank" rel="noreferrer">lib/validate.js</a>
+      </p>
+
       <h2>Honest limits</h2>
       <ul>
         <li>Top-level document only: iframes and shadow DOM are not supported.</li>
