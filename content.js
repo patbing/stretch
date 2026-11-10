@@ -336,6 +336,10 @@
     btn.appendChild(c);
     btn.addEventListener("mousedown", (e) => e.preventDefault()); // keep the page selection
     btn.addEventListener("click", (e) => {
+      // The host lives in an open shadow root, so any page script can reach this
+      // button and call .click(). Synthetic clicks have isTrusted === false and
+      // must not be allowed to spend the reader's Pollen.
+      if (!e.isTrusted) return;
       e.preventDefault();
       e.stopPropagation();
       onClick.click();
