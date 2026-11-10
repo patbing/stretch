@@ -1,6 +1,6 @@
 {
   "name": "STRETCH",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Stretchtext for any web page: select a phrase and it grows inline, then shrinks back. Paid with your own Pollen.",
   "manifest_version": 3,
   "minimum_chrome_version": "111",
@@ -15,7 +15,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "STRETCH — stretchtext for any page",
+    "default_title": "STRETCH ??stretchtext for any page",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
